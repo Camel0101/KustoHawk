@@ -12,6 +12,12 @@
         "ResultCount":  0
     },
     {
+        "Name":  "UEBA anomaly events",
+        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn",
+        "Source":  "tbd",
+        "ResultCount":  0
+    },
+    {
         "Name":  "Potential AiTM sign-ins",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nSigninLogs\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where UserPrincipalName =~ Upn\r\n| extend deviceId = tostring(DeviceDetail.deviceId), displayName = tostring(DeviceDetail.displayName)\r\n| where isempty(deviceId)\r\n| summarize RiskLevels = make_set(RiskLevelDuringSignIn), ResultTypes = make_set(ResultType), IPs = make_set(IPAddress), Useragents = make_set(UserAgent) by CorrelationId, UserPrincipalName, IPAddress\r\n| where ResultTypes has_all (0, 50140) or ResultTypes has_all (0, 50074)\r\n| where RiskLevels has_any (\u0027low\u0027, \u0027medium\u0027, \u0027high\u0027)",
         "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/4eed989c75c01e4f27af4140a04bdc7eb86e6ab9/Functions/UserRiskStatus.md",
@@ -102,3 +108,4 @@
         "ResultCount":  0
     }
 ]
+
