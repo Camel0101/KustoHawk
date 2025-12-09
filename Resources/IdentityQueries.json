@@ -13,7 +13,7 @@
     },
     {
         "Name":  "UEBA anomaly events",
-        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn",
+        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn | where TimeGenerated \u003e ago(TimeFrame)",
         "Source":  "tbd",
         "ResultCount":  0
     },
