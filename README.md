@@ -63,12 +63,13 @@ To get results for all queries the tables below are required. It is no issue if 
 - Defender For Endpoint (DeviceFileEvents, DeviceEvents, DeviceTvmSoftwareVulnerabilities, DeviceRegistryEvents, DeviceNetworkEvents, DeviceProcessEvents, DeviceInfo)
 
 ### Identity Triage
-- Unified Security Platform Alerts (AlertEvidence, AlertInfo) 
+- Unified Security Platform Alerts (AlertEvidence, AlertInfo)
+- Sentinel UEABA (Anomalies) 
 - Entra ID Logs (AADUserRiskEvents, SigninLogs, AuditLogs, AADSignInEventsBeta)
 - AzureActivity
 - Defender For Identity (IdentityInfo)
 - GraphAPIAuditEvents
-- Defender For Cloud Apps (CloudAppEvents)
+- Defender For Cloud Apps (CloudAppEvents, BehaviorEntities, BehaviorInfo)
 
 ## Contribute
 Contributions are highly appriciated! You can contribute by adding new queries to the JSON files in the [Resources](./Resources/) folder. Create a pull request for the new queries.
