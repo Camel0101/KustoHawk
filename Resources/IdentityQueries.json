@@ -13,13 +13,13 @@
     },
     {
         "Name":  "UEBA anomaly events",
-        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn | where TimeGenerated \u003e ago(TimeFrame)",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn | where TimeGenerated \u003e ago(TimeFrame)",
         "Source":  "tbd",
         "ResultCount":  0
     },
     {
         "Name":  "Behavior anomaly events",
-        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nBehaviorEntities\r\n| where TimeGenerated >ago(TimeFrame)\r\n| where AccountUpn =~ Upn\r\n| join kind=inner (BehaviorInfo) on BehaviorId\r\n| project-reorder TimeGenerated, AccountUpn, Description, AttackTechniques",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nBehaviorEntities\r\n| where TimeGenerated \u003eago(TimeFrame)\r\n| where AccountUpn =~ Upn\r\n| join kind=inner (BehaviorInfo) on BehaviorId\r\n| project-reorder TimeGenerated, AccountUpn, Description, AttackTechniques",
         "Source":  "tbd",
         "ResultCount":  0
     },
