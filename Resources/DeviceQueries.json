@@ -128,19 +128,19 @@
     {
         "Name":  "Rare .lnk file created on desktop",
         "Query":  "let Device = \u0027{DeviceId}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nlet Threshold = 1000;\r\nDeviceEvents\r\n| where DeviceId =~ Device\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| where ActionType =~ \u0027ShellLinkCreateFileEvent\u0027\r\n| where FolderPath has \u0027Desktop\u0027\r\n| extend ShellLinkIconPath = parse_json(AdditionalFields).ShellLinkIconPath, ShellLinkWorkingDirectory = parse_json(AdditionalFields).ShellLinkWorkingDirectory\r\n// Enrich data with FileProfile\r\n| invoke FileProfile(InitiatingProcessSHA256, 10000)\r\n| where GlobalPrevalence \u003c= Threshold\r\n| project Timestamp, ActionType, FolderPath, ShellLinkIconPath, ShellLinkWorkingDirectory, InitiatingProcessAccountUpn",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/RareLnkFileCreatedOnDesktop.md",
         "ResultCount":  0
     },
     {
         "Name":  "Defender exclusion events",
         "Query":  "let Device = \u0027{DeviceId}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nlet ExclusionOptions = dynamic([\u0027ExclusionPath\u0027, \u0027ExclusionExtension\u0027, \u0027ExclusionProcess\u0027, \u0027ExclusionIpAddress\u0027]);\r\nlet Modules = dynamic([\u0027Add-MpPreference\u0027,\u0027Set-MpPreference\u0027]);\r\nlet CommandLineExecutions = DeviceProcessEvents\r\n    | where DeviceId =~ Device\r\n    | where Timestamp \u003e ago(TimeFrame)\r\n    | where ProcessCommandLine has_any (Modules) and ProcessCommandLine has_any (ExclusionOptions);\r\nlet PowerShellExecutions = DeviceEvents\r\n    | where DeviceId =~ Device\r\n    | where Timestamp \u003e ago(TimeFrame)\r\n    | where ActionType == \u0027PowerShellCommand\u0027 \r\n    | where AdditionalFields  has_any (Modules) and AdditionalFields has_any (ExclusionOptions);\r\nunion PowerShellExecutions, CommandLineExecutions",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/DefenderExclusionEvents.md",
         "ResultCount":  0
     },
     {
         "Name":  "Scheduled tasks from AppData created or updated",
         "Query":  "let Device = \u0027{DeviceId}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nlet Filters = dynamic([\u0027AppData\u0027, \u0027%localappdata%\u0027, \u0027%appdata%\u0027]);\r\nlet Exclusions = dynamic([@\u0027\\\\Microsoft\\\\OneDrive\\\\OneDriveStandaloneUpdater.exe\u0027, \u0027OneDriveLauncher.exe\u0027]);\r\nDeviceEvents\r\n| where DeviceId =~ Device\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| where ActionType in (\u0027ScheduledTaskCreated\u0027, \u0027ScheduledTaskUpdated\u0027)\r\n| where AdditionalFields has_any (Filters)\r\n| extend ParsedAdditionalFields = parse_json(AdditionalFields)\r\n| extend ScheduledTaskName = ParsedAdditionalFields.TaskName, Details = parse_json(ParsedAdditionalFields.TaskContent)\r\n| where not(Details has_any (Exclusions))\r\n| project-reorder Timestamp, DeviceName, ActionType, InitiatingProcessAccountUpn, ScheduledTaskName, Details",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Defender%20For%20Endpoint/ScheduledTasksFromAppDataCreatedOrUpdated.md",
         "ResultCount":  0
     },
     {
