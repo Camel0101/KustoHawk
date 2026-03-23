@@ -14,13 +14,13 @@
     {
         "Name":  "UEBA anomaly events",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nAnomalies\r\n| where Entities has Upn or UserPrincipalName =~ Upn | where TimeGenerated \u003e ago(TimeFrame)",
-        "Source":  "tbd",
+        "Source":  "Not documented",
         "ResultCount":  0
     },
     {
         "Name":  "Behavior anomaly events",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nBehaviorEntities\r\n| where TimeGenerated \u003eago(TimeFrame)\r\n| where AccountUpn =~ Upn\r\n| join kind=inner (BehaviorInfo) on BehaviorId\r\n| project-reorder TimeGenerated, AccountUpn, Description, AttackTechniques",
-        "Source":  "tbd",
+        "Source":  "Not documented",
         "ResultCount":  0
     },
     {
@@ -31,8 +31,8 @@
     },
     {
         "Name":  "Successful sign-in from suspicious user agent",
-        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nlet SuspiciousUserAgents = dynamic([\u0027axios\u0027, \u0027azurehound\u0027, \u0027Go-http-client\u0027, \u0027python-requests\u0027, \u0027node-fetch\u0027, \u0027agentaxios\u0027, \u0027BAV2ROPC\u0027]);\r\nAADSignInEventsBeta\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where AccountUpn =~ Upn\r\n| where UserAgent has_any (SuspiciousUserAgents)\r\n| where ErrorCode == 0\r\n| project-reorder ApplicationId, Application, UserAgent, AccountUpn",
-        "Source":  "tbd",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nlet SuspiciousUserAgents = externaldata(http_user_agent:string,metadata_description:string,metadata_tool:string,metadata_category:string,metadata_link:string,metadata_priority:string,metadata_fp_risk:string,metadata_severity:string,metadata_usage:string,metadata_flow_from_external:string,metadata_flow_from_internal:string,metadata_flow_to_internal:string,metadata_flow_to_external:string,metadata_for_successful_external_login_events:string,metadata_comment:string)[\u0027https://raw.githubusercontent.com/mthcht/awesome-lists/refs/heads/main/Lists/suspicious_http_user_agents_list.csv\u0027] with (format=\u0027csv\u0027, ignoreFirstRecord=true);\r\nlet UserAgentsOfInterest = SuspiciousUserAgents\r\n| where metadata_category in~ (\u0027Credential Access\u0027,\r\n    \u0027Phishing\u0027,\r\n    \u0027phishing\u0027,\r\n    \u0027Reconnaissance\u0027,\r\n    \u0027Exploit\u0027,\r\n    \u0027Exploitation\u0027,\r\n    \u0027Exploitation tool\u0027,\r\n    \u0027Defense Evasion\u0027,\r\n    \u0027POST Exploitation\u0027,\r\n    \u0027Bots \u0026 Vulnerability Scanner\u0027,\r\n    \u0027uncommun user agent\u0027)\r\n| extend StandardizedUserAgent = replace_string(http_user_agent, \u0027*\u0027, \u0027\u0027)\r\n| distinct StandardizedUserAgent;\r\nEntraIdSignInEvents\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| where AccountUpn =~ Upn\r\n| where ErrorCode == 0\r\n| where UserAgent has_any (UserAgentsOfInterest)\r\n| project-reorder TimeGenerated, AccountUpn, UserAgent, ErrorCode, SessionId",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Azure%20Active%20Directory/SuccessfulSigninFromSuspiciousUserAgent.md",
         "ResultCount":  0
     },
     {
@@ -68,19 +68,19 @@
     {
         "Name":  "Azure resources created",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nAzureActivity\r\n| where Caller =~ Upn\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where OperationNameValue endswith \u0027write\u0027\r\n| project TimeGenerated, OperationNameValue, ActivityStatusValue, SubscriptionId, ResourceGroup, Caller, CallerIpAddress",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/DFIR/Azure/Azure%20-%20AzureActivityCompromisedAccount.md",
         "ResultCount":  0
     },
     {
         "Name":  "Azure resources deleted",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nAzureActivity\r\n| where Caller =~ Upn\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where OperationNameValue endswith \u0027delete\u0027\r\n| project TimeGenerated, OperationNameValue, ActivityStatusValue, SubscriptionId, ResourceGroup, Caller, CallerIpAddress",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/DFIR/Azure/Azure%20-%20AzureActivityCompromisedAccount.md",
         "ResultCount":  0
     },
     {
         "Name":  "Azure resources actioned",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nAzureActivity\r\n| where Caller =~ Upn\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where OperationNameValue endswith \u0027action\u0027\r\n| project TimeGenerated, OperationNameValue, ActivityStatusValue, SubscriptionId, ResourceGroup, Caller, CallerIpAddress",
-        "Source":  "tbd",
+        "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/DFIR/Azure/Azure%20-%20AzureActivityCompromisedAccount.md",
         "ResultCount":  0
     },
     {
