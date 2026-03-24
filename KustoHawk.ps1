@@ -60,7 +60,6 @@
     - Results are output as tables, CSV, and HTML reports in the current directory.
     - Requires Microsoft.Graph.Security PowerShell module.
 #>
-#Requires -Modules Microsoft.Graph.Security
 
 param (
         [Parameter(Mandatory=$false)][Alias('host')][string]$DeviceId,
@@ -74,8 +73,27 @@ param (
     )
 
 
-# Import Modules
-Import-Module Microsoft.Graph.Security
+function Ensure-GraphSecurityModule {
+    $moduleName = 'Microsoft.Graph.Security'
+
+    if (Get-Module -ListAvailable -Name $moduleName) {
+        Import-Module $moduleName -ErrorAction Stop
+        return $true
+    }
+
+    Write-Host "$moduleName is not installed. Attempting install for CurrentUser..." -ForegroundColor Yellow
+
+    try {
+        Install-Module -Name $moduleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Import-Module $moduleName -ErrorAction Stop
+        Write-Host "$moduleName installed and imported." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Failed to install/import $moduleName. Install it manually with: Install-Module Microsoft.Graph.Security -Scope CurrentUser" -ForegroundColor Red
+        Write-Host "Error: $_" -ForegroundColor Red
+        return $false
+    }
+}
 
 # Set Service Principal Variables
 $AppID = "<AppID>"
@@ -350,6 +368,31 @@ function RunQueriesFromFile {
     return $KQLQueries
 }
 
+function GetReportFooterHtml {
+    return @"
+    <div class='footer' style='padding:12px 16px; text-align:center; font-size:0.9rem; color:#444;'>
+        &copy; 2025 <span class='trademark'>Bert-Jan Pals &trade;</span> — All rights reserved.
+        <div class='social' style='margin-top:8px; display:inline-flex; gap:12px; align-items:center;'>
+            <a href='https://github.com/bert-janp' target='_blank' rel='noopener noreferrer' aria-label='GitHub' title='GitHub' style='color:inherit; text-decoration:none;'>
+                <svg width='20' height='20' viewBox='0 0 16 16' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
+                    <path fill-rule='evenodd' d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 4.6c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.001 8.001 0 0 0 16 8c0-4.42-3.58-8-8-8z'/>
+                </svg>
+            </a>
+            <a href='https://www.linkedin.com/in/bert-janpals/' target='_blank' rel='noopener noreferrer' aria-label='LinkedIn' title='LinkedIn' style='color:inherit; text-decoration:none;'>
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
+                    <path d='M4.98 3.5C4.98 4.88071 3.87 6 2.5 6 1.12 6 0 4.88 0 3.5 0 2.12 1.12 1 2.5 1 3.87 1 4.98 2.12 4.98 3.5zM.24 8.98h4.52V24H.24zM8.98 8.98h4.34v2.05h.06c.6-1.14 2.06-2.34 4.24-2.34 4.54 0 5.37 2.99 5.37 6.88V24h-4.52v-7.03c0-1.68-.03-3.85-2.35-3.85-2.35 0-2.71 1.84-2.71 3.73V24H8.98z'/>
+                </svg>
+            </a>
+            <a href='https://x.com/BertJanCyber' target='_blank' rel='noopener noreferrer' aria-label='X (Twitter)' title='X (Twitter)' style='color:inherit; text-decoration:none;'>
+                <svg width='20' height='20' viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
+                    <path d='M23.77 2.28a1 1 0 0 0-1.4-.14L13 10.34 1.63 2.12A1 1 0 0 0 .2 3.47l10.9 8.18L1.8 20.03a1 1 0 0 0 .55 1.82c.22 0 .44-.06.63-.18L13 13.66l9.1 8.01c.25.22.59.32.92.26.35-.06.66-.3.81-.63.14-.33.1-.71-.12-1.01L13.96 11.7l9.8-8.08a1 1 0 0 0 .01-1.34z'/>
+                </svg>
+            </a>
+        </div>
+    </div>
+"@
+}
+
 function GenerateQueryReport {
     param (
         [string]$FileName,
@@ -362,10 +405,11 @@ function GenerateQueryReport {
     } else {
         $KQLQueries = Get-Content -Raw -Path ".\$FileName" | ConvertFrom-Json
     }
-    switch($QueryType) {
-            'Device' {
-        $Entity = $DeviceId
-        break
+
+    switch ($QueryType) {
+        'Device' {
+            $Entity = $DeviceId
+            break
         }
         'Identity' {
             $Entity = $UserPrincipalName
@@ -376,6 +420,20 @@ function GenerateQueryReport {
             Write-Warning "Unknown QueryType '$QueryType'. Entity set to `$null."
         }
     }
+
+    $devicePageFile = if (-not [string]::IsNullOrWhiteSpace($DeviceId)) { "Device-ExecutedQueries-$DeviceId.html" } else { $null }
+    $userPageFile = if (-not [string]::IsNullOrWhiteSpace($UserPrincipalName)) { "Identity-ExecutedQueries-$UserPrincipalName.html" } else { $null }
+    $mainPageFile = 'index.html'
+
+    $mainNavClass = 'nav-link'
+    $deviceNavClass = if ($QueryType -eq 'Device') { 'nav-link active' } else { 'nav-link' }
+    $userNavClass = if ($QueryType -eq 'Identity') { 'nav-link active' } else { 'nav-link' }
+
+    $mainNav = "<a class='$mainNavClass' href='$mainPageFile'>Main</a>"
+    $deviceNav = if ($devicePageFile) { "<a class='$deviceNavClass' href='$devicePageFile'>Device</a>" } else { "<span class='nav-link disabled'>Device</span>" }
+    $userNav = if ($userPageFile) { "<a class='$userNavClass' href='$userPageFile'>User</a>" } else { "<span class='nav-link disabled'>User</span>" }
+
+    $pageLabel = if ($QueryType -eq 'Identity') { 'User' } else { $QueryType }
 
     $html = @"
 <!DOCTYPE html>
@@ -404,6 +462,53 @@ function GenerateQueryReport {
             padding: 0;
             color: var(--neutral-foreground-1);
         }
+        .page-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--neutral-stroke-1);
+        }
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+        }
+        .header-title {
+            font-weight: 700;
+            color: var(--neutral-foreground-1);
+        }
+        .nav-links {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            text-decoration: none;
+            color: var(--brand-foreground-1);
+            border: 1px solid var(--neutral-stroke-2);
+            background: #fff;
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .nav-link.active {
+            color: #fff;
+            background: var(--brand-bg-1);
+            border-color: var(--brand-bg-1);
+        }
+        .nav-link.disabled {
+            color: var(--neutral-foreground-2);
+            background: var(--neutral-bg-3);
+            border-color: var(--neutral-stroke-2);
+            cursor: not-allowed;
+        }
         .container {
             max-width: 1200px;
             margin: 40px auto 0 auto;
@@ -422,7 +527,6 @@ function GenerateQueryReport {
             font-size: 2.1em;
             letter-spacing: 1px;
         }
-
         .report-table {
             width: 100%;
             border-collapse: separate;
@@ -433,7 +537,6 @@ function GenerateQueryReport {
             overflow: hidden;
             table-layout: fixed;
         }
-
         .report-table thead th {
             background: var(--neutral-bg-3);
             color: var(--neutral-foreground-1);
@@ -443,44 +546,81 @@ function GenerateQueryReport {
             font-size: 0.95rem;
             padding: 12px;
         }
-
         .report-table tbody td {
             border-bottom: 1px solid var(--neutral-stroke-1);
             padding: 12px;
             vertical-align: top;
             color: var(--neutral-foreground-1);
         }
-
         .report-table tbody tr.query-row:hover {
             background: var(--neutral-bg-2);
         }
-
         .col-name { width: 24%; }
-        .col-query { width: 46%; }
+        .col-query { width: 54%; }
         .col-hits { width: 10%; text-align: center; }
-        .col-source { width: 20%; }
-
-        .cell-name,
+        .col-source { width: 12%; }
+        .sort-button {
+            border: none;
+            background: transparent;
+            font: inherit;
+            font-weight: 700;
+            color: inherit;
+            cursor: pointer;
+            padding: 0;
+        }
+        .sort-indicator {
+            display: inline-block;
+            min-width: 10px;
+            margin-left: 4px;
+        }
+        .cell-name {
+            font-weight: 700;
+            word-break: break-word;
+        }
         .cell-source {
             word-break: break-word;
         }
-
+        .query-cell {
+            position: relative;
+        }
+        .query-card {
+            position: relative;
+        }
+        .copy-query-button {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            border: 1px solid #334155;
+            background: rgba(17, 24, 39, 0.9);
+            color: #e5e7eb;
+            border-radius: 6px;
+            padding: 3px 10px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .copy-query-button:hover {
+            background: rgba(30, 41, 59, 0.95);
+        }
+        .copy-query-button.copied {
+            background: #166534;
+            border-color: #22c55e;
+            color: #dcfce7;
+        }
         .query-pre {
             background: #111827;
             color: #f9fafb;
             font-size: 0.92em;
-            padding: 12px;
+            padding: 40px 12px 12px 12px;
             border-radius: 6px;
             margin: 0;
             overflow-x: auto;
             white-space: pre-wrap;
             max-height: 280px;
         }
-
         .cell-hits {
             text-align: center;
         }
-
         .hits-pill {
             display: inline-block;
             min-width: 28px;
@@ -491,46 +631,57 @@ function GenerateQueryReport {
             color: #ffffff;
             background: var(--brand-bg-1);
         }
-
         .hits-pill.zero {
             background: #8a8886;
         }
-
         .sample-row td {
             background: var(--neutral-bg-2);
             border-bottom: 1px solid var(--neutral-stroke-1);
         }
-
         .sample-details {
             margin-top: 2px;
         }
-
         .sample-details summary {
             cursor: pointer;
             color: var(--brand-foreground-1);
             font-weight: 600;
             padding: 4px 0;
         }
-
-        .sample-json {
-            margin: 8px 0 0 0;
-            padding: 10px;
-            background: #ffffff;
+        .sample-table-wrap {
+            margin-top: 8px;
+            overflow: auto;
             border: 1px solid var(--neutral-stroke-2);
             border-radius: 6px;
-            overflow: auto;
-            max-height: 320px;
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-size: 0.9em;
+            background: #fff;
         }
-
+        .sample-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            min-width: 600px;
+        }
+        .sample-table th,
+        .sample-table td {
+            border: 1px solid var(--neutral-stroke-1);
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+            word-break: break-word;
+        }
+        .sample-table thead th {
+            background: #f3f4f6;
+            font-weight: 700;
+        }
+        .sample-caption {
+            margin-top: 8px;
+            color: var(--neutral-foreground-2);
+            font-size: 0.85rem;
+        }
         .sample-empty {
             margin-top: 8px;
             color: var(--neutral-foreground-2);
             font-size: 0.92em;
         }
-
         @media (max-width: 900px) {
             .container { padding: 16px; }
             .report-table,
@@ -552,6 +703,10 @@ function GenerateQueryReport {
             }
             .cell-hits { text-align: left; }
             .query-pre { max-height: 220px; }
+            .copy-query-button {
+                top: 6px;
+                right: 6px;
+            }
         }
         .footer {
             text-align: center;
@@ -574,14 +729,24 @@ function GenerateQueryReport {
     </style>
 </head>
 <body>
+    <header class='page-header'>
+        <div class='header-inner'>
+            <div class='header-title'>KustoHawk Report</div>
+            <nav class='nav-links' aria-label='Report navigation'>
+                $mainNav
+                $deviceNav
+                $userNav
+            </nav>
+        </div>
+    </header>
     <div class='container'>
-        <h1>Executed Queries ($QueryType - $Entity)</h1>
+        <h1>Executed Queries ($pageLabel - $Entity)</h1>
         <table class='report-table' aria-label='Executed queries'>
             <thead>
                 <tr>
                     <th class='col-name'>Name</th>
                     <th class='col-query'>Query</th>
-                    <th class='col-hits'>Hits</th>
+                    <th class='col-hits'><button id='sortHitsButton' class='sort-button' type='button'>Hits <span id='sortIndicator' class='sort-indicator'>▼</span></button></th>
                     <th class='col-source'>Source</th>
                 </tr>
             </thead>
@@ -592,7 +757,8 @@ function GenerateQueryReport {
         $queryText = $q.Query -replace '\{DeviceId\}', $DeviceId -replace '\{TimeFrame\}', $TimeFrame -replace '\{UserPrincipalName\}', $UserPrincipalName
         $name = [System.Web.HttpUtility]::HtmlEncode($q.Name)
         $queryRendered = [System.Web.HttpUtility]::HtmlEncode($queryText)
-        $hits = if ($q.PSObject.Properties.Match('ResultCount')) { $q.ResultCount } else { 0 }
+        $queryForAttribute = [System.Web.HttpUtility]::HtmlAttributeEncode($queryText)
+        $hits = if ($q.PSObject.Properties.Match('ResultCount')) { [int]$q.ResultCount } else { 0 }
         $source = $q.Source
         $sourceLink = if ($source -match '^https?://') {
             $sourceUrl = [System.Web.HttpUtility]::HtmlEncode($source)
@@ -602,7 +768,7 @@ function GenerateQueryReport {
         }
 
         $hitsClass = if ($hits -eq 0) { 'hits-pill zero' } else { 'hits-pill' }
-        $html += "<tr class='query-row'><td class='cell-name'>$name</td><td><pre class='query-pre'>$queryRendered</pre></td><td class='cell-hits'><span class='$hitsClass'>$hits</span></td><td class='cell-source'>$sourceLink</td></tr>`n"
+        $html += "<tr class='query-row' data-hits='$hits'><td class='cell-name'>$name</td><td><div class='query-cell'><div class='query-card'><button type='button' class='copy-query-button' data-query='$queryForAttribute'>Copy</button><pre class='query-pre'>$queryRendered</pre></div></div></td><td class='cell-hits'><span class='$hitsClass'>$hits</span></td><td class='cell-source'>$sourceLink</td></tr>`n"
 
         if ($IncludeSampleSet) {
             $sampleRows = @()
@@ -611,40 +777,119 @@ function GenerateQueryReport {
             }
 
             if ($sampleRows.Count -gt 0) {
-                $sampleJson = [System.Web.HttpUtility]::HtmlEncode(($sampleRows | ConvertTo-Json -Depth 8))
-                $sampleBody = "<pre class='sample-json'>$sampleJson</pre>"
+                $sampleColumns = @()
+                foreach ($sampleRow in $sampleRows) {
+                    if ($null -eq $sampleRow -or $null -eq $sampleRow.PSObject) {
+                        continue
+                    }
+                    foreach ($prop in $sampleRow.PSObject.Properties) {
+                        if ($sampleColumns -notcontains $prop.Name) {
+                            $sampleColumns += $prop.Name
+                        }
+                    }
+                }
+
+                if ($sampleColumns.Count -gt 0) {
+                    $headerCells = ($sampleColumns | ForEach-Object {
+                        "<th>$([System.Web.HttpUtility]::HtmlEncode($_))</th>"
+                    }) -join ''
+
+                    $sampleRowsHtml = ''
+                    foreach ($sampleRow in $sampleRows) {
+                        $rowCells = ''
+                        foreach ($columnName in $sampleColumns) {
+                            $rawValue = $sampleRow.PSObject.Properties[$columnName].Value
+                            if ($null -eq $rawValue) {
+                                $renderValue = ''
+                            } elseif ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
+                                $renderValue = ($rawValue | ForEach-Object { "$_" }) -join ', '
+                            } else {
+                                $renderValue = "$rawValue"
+                            }
+                            $encodedValue = [System.Web.HttpUtility]::HtmlEncode($renderValue)
+                            $rowCells += "<td>$encodedValue</td>"
+                        }
+                        $sampleRowsHtml += "<tr>$rowCells</tr>"
+                    }
+
+                    $sampleBody = "<div class='sample-table-wrap'><table class='sample-table'><thead><tr>$headerCells</tr></thead><tbody>$sampleRowsHtml</tbody></table></div><div class='sample-caption'>Showing up to 10 sample rows.</div>"
+                } else {
+                    $sampleBody = "<div class='sample-empty'>No sample rows available.</div>"
+                }
             } else {
                 $sampleBody = "<div class='sample-empty'>No sample rows available.</div>"
             }
 
-            $html += "<tr class='sample-row'><td colspan='4'><details class='sample-details'><summary>View sample results (max 10)</summary>$sampleBody</details></td></tr>`n"
+            $summaryText = "View sample results ($($sampleRows.Count) rows)"
+            $html += "<tr class='sample-row'><td colspan='4'><details class='sample-details'><summary>$summaryText</summary>$sampleBody</details></td></tr>`n"
         }
     }
+
+    $footerHtml = GetReportFooterHtml
 
 $html += @"
             </tbody>
         </table>
     </div>
-    <div class='footer' style='padding:12px 16px; text-align:center; font-size:0.9rem; color:#444;'>
-        &copy; 2025 <span class='trademark'>Bert-Jan Pals &trade;</span> — All rights reserved.
-        <div class='social' style='margin-top:8px; display:inline-flex; gap:12px; align-items:center;'>
-            <a href='https://github.com/bert-janp' target='_blank' rel='noopener noreferrer' aria-label='GitHub' title='GitHub' style='color:inherit; text-decoration:none;'>
-                <svg width='20' height='20' viewBox='0 0 16 16' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
-                    <path fill-rule='evenodd' d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 4.6c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.19 0 .21.15.46.55.38A8.001 8.001 0 0 0 16 8c0-4.42-3.58-8-8-8z'/>
-                </svg>
-            </a>
-            <a href='https://www.linkedin.com/in/bert-janpals/' target='_blank' rel='noopener noreferrer' aria-label='LinkedIn' title='LinkedIn' style='color:inherit; text-decoration:none;'>
-                <svg width='20' height='20' viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
-                    <path d='M4.98 3.5C4.98 4.88071 3.87 6 2.5 6 1.12 6 0 4.88 0 3.5 0 2.12 1.12 1 2.5 1 3.87 1 4.98 2.12 4.98 3.5zM.24 8.98h4.52V24H.24zM8.98 8.98h4.34v2.05h.06c.6-1.14 2.06-2.34 4.24-2.34 4.54 0 5.37 2.99 5.37 6.88V24h-4.52v-7.03c0-1.68-.03-3.85-2.35-3.85-2.35 0-2.71 1.84-2.71 3.73V24H8.98z'/>
-                </svg>
-            </a>
-            <a href='https://x.com/BertJanCyber' target='_blank' rel='noopener noreferrer' aria-label='X (Twitter)' title='X (Twitter)' style='color:inherit; text-decoration:none;'>
-                <svg width='20' height='20' viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>
-                    <path d='M23.77 2.28a1 1 0 0 0-1.4-.14L13 10.34 1.63 2.12A1 1 0 0 0 .2 3.47l10.9 8.18L1.8 20.03a1 1 0 0 0 .55 1.82c.22 0 .44-.06.63-.18L13 13.66l9.1 8.01c.25.22.59.32.92.26.35-.06.66-.3.81-.63.14-.33.1-.71-.12-1.01L13.96 11.7l9.8-8.08a1 1 0 0 0 .01-1.34z'/>
-                </svg>
-            </a>
-        </div>
-    </div>
+    <script>
+        (function() {
+            const tableBody = document.querySelector('.report-table tbody');
+            const sortButton = document.getElementById('sortHitsButton');
+            const sortIndicator = document.getElementById('sortIndicator');
+            let descending = true;
+
+            function sortRowsByHits() {
+                const allRows = Array.from(tableBody.querySelectorAll('tr'));
+                const pairs = [];
+
+                for (let i = 0; i < allRows.length; i++) {
+                    const row = allRows[i];
+                    if (row.classList.contains('query-row')) {
+                        const sampleRow = allRows[i + 1] && allRows[i + 1].classList.contains('sample-row') ? allRows[i + 1] : null;
+                        const hits = Number(row.getAttribute('data-hits') || '0');
+                        pairs.push({ queryRow: row, sampleRow: sampleRow, hits: hits });
+                    }
+                }
+
+                pairs.sort((a, b) => descending ? (b.hits - a.hits) : (a.hits - b.hits));
+
+                for (const pair of pairs) {
+                    tableBody.appendChild(pair.queryRow);
+                    if (pair.sampleRow) {
+                        tableBody.appendChild(pair.sampleRow);
+                    }
+                }
+
+                sortIndicator.textContent = descending ? '▼' : '▲';
+                descending = !descending;
+            }
+
+            if (sortButton && tableBody) {
+                sortButton.addEventListener('click', sortRowsByHits);
+            }
+
+            const copyButtons = document.querySelectorAll('.copy-query-button');
+            for (const button of copyButtons) {
+                button.addEventListener('click', async function() {
+                    const queryText = button.getAttribute('data-query') || '';
+                    try {
+                        await navigator.clipboard.writeText(queryText);
+                        const originalText = button.textContent;
+                        button.textContent = 'Copied';
+                        button.classList.add('copied');
+                        setTimeout(() => {
+                            button.textContent = originalText;
+                            button.classList.remove('copied');
+                        }, 1200);
+                    } catch (error) {
+                        button.textContent = 'Failed';
+                        setTimeout(() => { button.textContent = 'Copy'; }, 1200);
+                    }
+                });
+            }
+        })();
+    </script>
+$footerHtml
 </body>
 </html>
 "@
@@ -658,6 +903,310 @@ $html += @"
     $outFile = Join-Path -Path $outputDir -ChildPath "$QueryType-ExecutedQueries-$Entity.html"
     $html | Set-Content $outFile
     Write-Host "Report saved to $outFile"
+
+    return $outFile
+}
+
+function GenerateMainReportPage {
+    param (
+        [object[]]$DeviceQueryData,
+        [object[]]$IdentityQueryData,
+        [string]$DeviceEntity,
+        [string]$UserEntity
+    )
+
+    $outputDir = Join-Path -Path (Get-Location) -ChildPath 'Reports'
+    if (-not (Test-Path -Path $outputDir)) {
+        New-Item -Path $outputDir -ItemType Directory | Out-Null
+    }
+
+    $devicePageFile = if (-not [string]::IsNullOrWhiteSpace($DeviceEntity)) { "Device-ExecutedQueries-$DeviceEntity.html" } else { $null }
+    $userPageFile = if (-not [string]::IsNullOrWhiteSpace($UserEntity)) { "Identity-ExecutedQueries-$UserEntity.html" } else { $null }
+
+    $deviceQueryCount = if ($DeviceQueryData) { $DeviceQueryData.Count } else { 0 }
+    $deviceHitsTotal = if ($DeviceQueryData) { ($DeviceQueryData | Measure-Object -Property ResultCount -Sum).Sum } else { 0 }
+    if ($null -eq $deviceHitsTotal) { $deviceHitsTotal = 0 }
+
+    $userQueryCount = if ($IdentityQueryData) { $IdentityQueryData.Count } else { 0 }
+    $userHitsTotal = if ($IdentityQueryData) { ($IdentityQueryData | Measure-Object -Property ResultCount -Sum).Sum } else { 0 }
+    if ($null -eq $userHitsTotal) { $userHitsTotal = 0 }
+
+    $allQueryData = @()
+    if ($DeviceQueryData) { $allQueryData += $DeviceQueryData }
+    if ($IdentityQueryData) { $allQueryData += $IdentityQueryData }
+
+    $totalQueryCount = $allQueryData.Count
+    $queriesWithHits = @($allQueryData | Where-Object { [int]$_.ResultCount -gt 0 }).Count
+    $queriesWithoutHits = [Math]::Max(0, ($totalQueryCount - $queriesWithHits))
+
+    $hitPercent = if ($totalQueryCount -gt 0) {
+        [Math]::Round(($queriesWithHits / $totalQueryCount) * 100, 2)
+    } else {
+        0
+    }
+
+    $chartStyle = if ($totalQueryCount -gt 0) {
+        "background: conic-gradient(#0f6cbd 0 $hitPercent%, #d1d5db $hitPercent% 100%);"
+    } else {
+        "background: conic-gradient(#d1d5db 0 100%);"
+    }
+
+    $deviceCardLink = if ($devicePageFile) {
+        "<a class='card-link' href='$devicePageFile'>Open Device Report</a>"
+    } else {
+        "<span class='card-link disabled'>Device report not generated</span>"
+    }
+
+    $userCardLink = if ($userPageFile) {
+        "<a class='card-link' href='$userPageFile'>Open User Report</a>"
+    } else {
+        "<span class='card-link disabled'>User report not generated</span>"
+    }
+
+    $deviceSummary = if ($devicePageFile) {
+        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($DeviceEntity))</p><p class='meta'>Queries: $deviceQueryCount</p><p class='meta'>Total Hits: $deviceHitsTotal</p>"
+    } else {
+        "<p class='meta'>No device input was provided in this run.</p>"
+    }
+
+    $userSummary = if ($userPageFile) {
+        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($UserEntity))</p><p class='meta'>Queries: $userQueryCount</p><p class='meta'>Total Hits: $userHitsTotal</p>"
+    } else {
+        "<p class='meta'>No user input was provided in this run.</p>"
+    }
+
+    $footerHtml = GetReportFooterHtml
+
+    $mainHtml = @"
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>KustoHawk Reports</title>
+    <style>
+        :root {
+            --bg: #f4f6fb;
+            --surface: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --brand: #0f6cbd;
+            --stroke: #dde3ec;
+        }
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', 'Arial', sans-serif;
+            background: linear-gradient(180deg, #f7f9fc 0%, #edf2f9 100%);
+            color: var(--text);
+        }
+        .page-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--stroke);
+        }
+        .header-inner {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .header-title {
+            font-weight: 700;
+        }
+        .nav-links {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .nav-link {
+            text-decoration: none;
+            color: var(--brand);
+            border: 1px solid var(--stroke);
+            border-radius: 999px;
+            background: #fff;
+            padding: 6px 14px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .nav-link.active {
+            background: var(--brand);
+            border-color: var(--brand);
+            color: #fff;
+        }
+        .nav-link.disabled {
+            color: var(--muted);
+            background: #f3f4f6;
+            cursor: not-allowed;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 34px auto;
+            padding: 0 20px;
+        }
+        h1 {
+            margin: 0 0 12px 0;
+            font-size: 2rem;
+        }
+        .subtitle {
+            margin: 0 0 24px 0;
+            color: var(--muted);
+        }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 16px;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--stroke);
+            border-radius: 12px;
+            padding: 18px;
+            box-shadow: 0 8px 24px rgba(10, 21, 40, 0.06);
+        }
+        .card h2 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+        }
+        .meta {
+            margin: 4px 0;
+            color: #374151;
+        }
+        .card-link {
+            display: inline-block;
+            margin-top: 14px;
+            text-decoration: none;
+            color: var(--brand);
+            font-weight: 700;
+        }
+        .card-link.disabled {
+            color: var(--muted);
+            font-weight: 600;
+        }
+        .overview-grid {
+            display: grid;
+            grid-template-columns: minmax(260px, 340px) 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .pie-card {
+            display: grid;
+            justify-items: center;
+            align-content: center;
+            gap: 12px;
+        }
+        .pie-chart {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            position: relative;
+            box-shadow: inset 0 0 0 1px #d1d5db;
+        }
+        .pie-center {
+            position: absolute;
+            inset: 28%;
+            border-radius: 50%;
+            background: #fff;
+            display: grid;
+            place-items: center;
+            text-align: center;
+            font-weight: 700;
+            color: #111827;
+            font-size: 0.9rem;
+            line-height: 1.2;
+        }
+        .legend {
+            width: 100%;
+            display: grid;
+            gap: 6px;
+            font-size: 0.9rem;
+        }
+        .legend-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .legend-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .dot-hit { background: #0f6cbd; }
+        .dot-nohit { background: #d1d5db; }
+        @media (max-width: 900px) {
+            .overview-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class='page-header'>
+        <div class='header-inner'>
+            <div class='header-title'>KustoHawk Report</div>
+            <nav class='nav-links' aria-label='Report navigation'>
+                <a class='nav-link active' href='index.html'>Main</a>
+                $(if ($devicePageFile) { "<a class='nav-link' href='$devicePageFile'>Device</a>" } else { "<span class='nav-link disabled'>Device</span>" })
+                $(if ($userPageFile) { "<a class='nav-link' href='$userPageFile'>User</a>" } else { "<span class='nav-link disabled'>User</span>" })
+            </nav>
+        </div>
+    </header>
+    <main class='container'>
+        <h1>Investigation Reports</h1>
+        <p class='subtitle'>Select a report page from the cards below or use the header navigation.</p>
+        <section class='overview-grid'>
+            <article class='card pie-card'>
+                <h2>Query Hit Ratio</h2>
+                <div class='pie-chart' style='$chartStyle'>
+                    <div class='pie-center'>$queriesWithHits / $totalQueryCount<br/>with hits</div>
+                </div>
+                <div class='legend'>
+                    <div class='legend-row'>
+                        <span class='legend-label'><span class='legend-dot dot-hit'></span>Queries with hits</span>
+                        <strong>$queriesWithHits</strong>
+                    </div>
+                    <div class='legend-row'>
+                        <span class='legend-label'><span class='legend-dot dot-nohit'></span>Queries without hits</span>
+                        <strong>$queriesWithoutHits</strong>
+                    </div>
+                    <div class='legend-row'>
+                        <span>Total queries</span>
+                        <strong>$totalQueryCount</strong>
+                    </div>
+                </div>
+            </article>
+            <article class='card'>
+                <h2>Device Report</h2>
+                $deviceSummary
+                $deviceCardLink
+                <hr style='border:none;border-top:1px solid #e5e7eb;margin:14px 0;'>
+                <h2>User Report</h2>
+                $userSummary
+                $userCardLink
+            </article>
+        </section>
+    </main>
+$footerHtml
+</body>
+</html>
+"@
+
+    $indexFile = Join-Path -Path $outputDir -ChildPath 'index.html'
+    $mainHtml | Set-Content $indexFile
+    Write-Host "Main report page saved to $indexFile"
 }
 
 $Version = '2.0.0'
@@ -682,8 +1231,15 @@ if ($VerboseOutput) {
     Write-Host "[*] Verbose mode enabled." -ForegroundColor Cyan
 }
 
-Connect-GraphAPI
+$deviceQueryResults = $null
+$identityQueryResults = $null
+
+if (-not (Ensure-GraphSecurityModule)) {
+    exit 1
+}
+
 $info = ValidateInputParameters
+Connect-GraphAPI
 GetEntityInfo $info.DeviceId $info.UserPrincipalName
 if ($DeviceId){
     $json = Get-Content -Raw -Path '.\Resources\DeviceQueries.json' | ConvertFrom-Json
@@ -701,3 +1257,5 @@ if ($UserPrincipalName){
     $identityQueryResults = RunQueriesFromFile .\Resources\IdentityQueries.json  $info.DeviceId $info.UserPrincipalName $IncludeSampleSet
     GenerateQueryReport .\Resources\IdentityQueries.json Identity $IncludeSampleSet $identityQueryResults
 }
+
+GenerateMainReportPage -DeviceQueryData $deviceQueryResults -IdentityQueryData $identityQueryResults -DeviceEntity $info.DeviceId -UserEntity $info.UserPrincipalName
