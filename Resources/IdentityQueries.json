@@ -115,7 +115,7 @@
     },
     {
         "Name":  "Suspicious Mailbox Rule Created",
-        "Query":  "let Upn = '{UserPrincipalName}';\r\nlet TimeFrame = {TimeFrame};\r\nCloudAppEvents\r\n| where Timestamp > ago(TimeFrame)\r\n| where RawEventData.UserId =~ Upn\r\n| where Application == 'Microsoft Exchange Online'\r\n| where ActionType == 'New-InboxRule'\r\n| mv-apply p=todynamic(ActivityObjects) on \r\n(\r\nwhere p.Name == 'Name'\r\n| extend RuleName=p.Value\r\n)\r\n| where isnotempty(RuleName)\r\n| where RuleName matches regex @'^[^a-zA-Z0-9]*$'\r\n| extend AccountUpn=tostring(RawEventData.UserId)\r\n| extend SessionId=tostring(RawEventData.SessionId)\r\n| project Timestamp, Application, ActionType, AccountUpn, RuleName, SessionId, IPAddress",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nCloudAppEvents\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| where RawEventData.UserId =~ Upn\r\n| where Application == \u0027Microsoft Exchange Online\u0027\r\n| where ActionType == \u0027New-InboxRule\u0027\r\n| mv-apply p=todynamic(ActivityObjects) on \r\n(\r\nwhere p.Name == \u0027Name\u0027\r\n| extend RuleName=p.Value\r\n)\r\n| where isnotempty(RuleName)\r\n| where RuleName matches regex @\u0027^[^a-zA-Z0-9]*$\u0027\r\n| extend AccountUpn=tostring(RawEventData.UserId)\r\n| extend SessionId=tostring(RawEventData.SessionId)\r\n| project Timestamp, Application, ActionType, AccountUpn, RuleName, SessionId, IPAddress",
         "Source":  "https://github.com/reprise99/Sentinel-Queries/blob/main/Defender%20for%20Cloud%20Apps/DCA-SuspiciousMailboxRuleCreated.kql",
         "ResultCount":  0
     }

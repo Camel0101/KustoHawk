@@ -99,7 +99,7 @@ function Ensure-GraphSecurityModule {
 $AppID = "<AppID>"
 $TenantID = "<TentantID>"
 $Secret = "<Secret>" #Certificate Authentication is recommended.
-$DefaultCertificateThumbprint = "2AFAC22579550A51D9F875E3B86A1420D1BFAC7D"
+$DefaultCertificateThumbprint = ""
 $SecureClientSecret = ConvertTo-SecureString -String $Secret -AsPlainText -Force
 $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppID, $SecureClientSecret
 
@@ -590,28 +590,35 @@ function GenerateQueryReport {
             position: absolute;
             top: 8px;
             right: 8px;
+            z-index: 2;
             border: 1px solid #334155;
-            background: rgba(17, 24, 39, 0.9);
+            background: rgba(17, 24, 39, 0.92);
             color: #e5e7eb;
             border-radius: 6px;
             padding: 3px 10px;
             font-size: 0.78rem;
             font-weight: 600;
             cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .query-card:hover .copy-query-button {
+            opacity: 1;
         }
         .copy-query-button:hover {
-            background: rgba(30, 41, 59, 0.95);
+            background: rgba(30, 41, 59, 0.98);
         }
         .copy-query-button.copied {
             background: #166534;
             border-color: #22c55e;
             color: #dcfce7;
+            opacity: 1;
         }
         .query-pre {
             background: #111827;
             color: #f9fafb;
             font-size: 0.92em;
-            padding: 40px 12px 12px 12px;
+            padding: 12px;
             border-radius: 6px;
             margin: 0;
             overflow-x: auto;
