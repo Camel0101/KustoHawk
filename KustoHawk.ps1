@@ -321,6 +321,72 @@ function GetEntityInfo {
     }
 }   
 
+function GetAlertsForEntity {
+    param (
+        [string]$DeviceId,
+        [string]$UserPrincipalName
+    )
+    $deviceAlerts = @()
+    $identityAlerts = @()
+
+    if ($DeviceId) {
+        $q = "AlertInfo
+| where Timestamp > ago(30d)
+| join kind=inner (AlertEvidence | where DeviceId =~ '$DeviceId') on AlertId
+| summarize arg_max(Timestamp, *) by AlertId
+| project Timestamp, AlertId, Title, Severity, Category, ServiceSource, AttackTechniques"
+        try {
+            $r = Start-MgSecurityHuntingQuery -BodyParameter @{ Query = $q; Timespan = "P30D" }
+            foreach ($row in $r.Results) {
+                $deviceAlerts += [PSCustomObject]@{
+                    Timestamp        = $row.AdditionalProperties["Timestamp"]
+                    AlertId          = $row.AdditionalProperties["AlertId"]
+                    Title            = $row.AdditionalProperties["Title"]
+                    Severity         = $row.AdditionalProperties["Severity"]
+                    Category         = $row.AdditionalProperties["Category"]
+                    ServiceSource    = $row.AdditionalProperties["ServiceSource"]
+                    AttackTechniques = $row.AdditionalProperties["AttackTechniques"]
+                    EntityType       = 'Device'
+                }
+            }
+            Write-Host "Retrieved $($deviceAlerts.Count) device alert(s)." -ForegroundColor Cyan
+        } catch {
+            Write-Warning "Failed to retrieve device alerts: $_"
+        }
+    }
+
+    if ($UserPrincipalName) {
+        $q = "AlertInfo
+| where Timestamp > ago(30d)
+| join kind=inner (AlertEvidence | where AccountUpn =~ '$UserPrincipalName') on AlertId
+| summarize arg_max(Timestamp, *) by AlertId
+| project Timestamp, AlertId, Title, Severity, Category, ServiceSource, AttackTechniques"
+        try {
+            $r = Start-MgSecurityHuntingQuery -BodyParameter @{ Query = $q; Timespan = "P30D" }
+            foreach ($row in $r.Results) {
+                $identityAlerts += [PSCustomObject]@{
+                    Timestamp        = $row.AdditionalProperties["Timestamp"]
+                    AlertId          = $row.AdditionalProperties["AlertId"]
+                    Title            = $row.AdditionalProperties["Title"]
+                    Severity         = $row.AdditionalProperties["Severity"]
+                    Category         = $row.AdditionalProperties["Category"]
+                    ServiceSource    = $row.AdditionalProperties["ServiceSource"]
+                    AttackTechniques = $row.AdditionalProperties["AttackTechniques"]
+                    EntityType       = 'User'
+                }
+            }
+            Write-Host "Retrieved $($identityAlerts.Count) identity alert(s)." -ForegroundColor Cyan
+        } catch {
+            Write-Warning "Failed to retrieve identity alerts: $_"
+        }
+    }
+
+    return @{
+        DeviceAlerts   = $deviceAlerts
+        IdentityAlerts = $identityAlerts
+    }
+}
+
 function RunQueriesFromFile {
     param (
         [string]$FileName,
@@ -919,7 +985,9 @@ function GenerateMainReportPage {
         [object[]]$DeviceQueryData,
         [object[]]$IdentityQueryData,
         [string]$DeviceEntity,
-        [string]$UserEntity
+           [string]$UserEntity,
+           [object[]]$DeviceAlerts,
+           [object[]]$IdentityAlerts
     )
 
     $outputDir = Join-Path -Path (Get-Location) -ChildPath 'Reports'
@@ -983,6 +1051,43 @@ function GenerateMainReportPage {
     }
 
     $footerHtml = GetReportFooterHtml
+
+    # Build combined alerts HTML
+    $allAlerts = @()
+    if ($DeviceAlerts)   { $allAlerts += $DeviceAlerts }
+    if ($IdentityAlerts) { $allAlerts += $IdentityAlerts }
+
+    $alertsById = @{}
+    foreach ($a in $allAlerts) {
+        $id = $a.AlertId
+        if (-not $alertsById.ContainsKey($id)) {
+            $alertsById[$id] = $a
+        } else {
+            $alertsById[$id].EntityType = 'Both'
+        }
+    }
+    $uniqueAlerts = @($alertsById.Values) | Sort-Object Timestamp -Descending
+
+    if ($uniqueAlerts.Count -gt 0) {
+        $alertRowsHtml = ''
+        foreach ($alert in $uniqueAlerts) {
+            $ts         = [System.Web.HttpUtility]::HtmlEncode($alert.Timestamp)
+            $title      = [System.Web.HttpUtility]::HtmlEncode($alert.Title)
+            $alertUrl   = "https://security.microsoft.com/alerts/$([System.Uri]::EscapeDataString($alert.AlertId))"
+            $sevRaw     = if ($alert.Severity) { $alert.Severity.ToString().ToLower() } else { 'informational' }
+            $sevClass   = switch ($sevRaw) { 'high' { 'sev-pill sev-high' } 'medium' { 'sev-pill sev-medium' } 'low' { 'sev-pill sev-low' } default { 'sev-pill sev-info' } }
+            $sevLabel   = [System.Web.HttpUtility]::HtmlEncode($alert.Severity)
+            $category   = [System.Web.HttpUtility]::HtmlEncode($alert.Category)
+            $source     = [System.Web.HttpUtility]::HtmlEncode($alert.ServiceSource)
+            $entityType = $alert.EntityType
+            $badgeClass = switch ($entityType) { 'Device' { 'badge-device' } 'User' { 'badge-user' } default { 'badge-both' } }
+            $entLabel   = [System.Web.HttpUtility]::HtmlEncode($entityType)
+            $alertRowsHtml += "<tr><td>$ts</td><td><a href='$alertUrl' target='_blank' rel='noopener noreferrer'>$title</a></td><td><span class='$sevClass'>$sevLabel</span></td><td>$category</td><td>$source</td><td><span class='$badgeClass'>$entLabel</span></td></tr>"
+        }
+        $alertsHtml = "<article class='card alerts-card'><h2>Active Alerts <span style='font-size:0.9rem;font-weight:500;color:#6b7280;'>($($uniqueAlerts.Count) in last 30 days)</span></h2><div class='alerts-table-wrap'><table class='alerts-table'><thead><tr><th>Timestamp</th><th>Title</th><th>Severity</th><th>Category</th><th>Service Source</th><th>Entity</th></tr></thead><tbody>$alertRowsHtml</tbody></table></div></article>"
+    } else {
+        $alertsHtml = "<article class='card alerts-card'><h2>Active Alerts</h2><div class='no-alerts'>No alerts found for this entity in the last 30 days.</div></article>"
+    }
 
     $mainHtml = @"
 <!DOCTYPE html>
@@ -1158,7 +1263,24 @@ function GenerateMainReportPage {
                 grid-template-columns: 1fr;
             }
         }
-    </style>
+            .alerts-card { margin-top: 16px; }
+            .alerts-card h2 { font-size: 1.3rem; margin: 0 0 12px 0; }
+            .alerts-table-wrap { overflow-x: auto; border: 1px solid var(--stroke); border-radius: 8px; background: var(--surface); }
+            .alerts-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 720px; }
+            .alerts-table thead th { background: #f3f4f6; font-weight: 700; padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--stroke); white-space: nowrap; }
+            .alerts-table tbody td { padding: 9px 12px; border-bottom: 1px solid var(--stroke); vertical-align: top; word-break: break-word; }
+            .alerts-table tbody tr:last-child td { border-bottom: none; }
+            .alerts-table tbody tr:hover { background: #f9fafb; }
+            .sev-pill { border-radius: 999px; padding: 2px 9px; font-weight: 700; font-size: 0.8rem; white-space: nowrap; display: inline-block; }
+            .sev-high   { background: #dc2626; color: #fff; }
+            .sev-medium { background: #ea580c; color: #fff; }
+            .sev-low    { background: #fde68a; color: #1f2937; }
+            .sev-info   { background: #2563eb; color: #fff; }
+            .badge-device { background: #0f6cbd; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
+            .badge-user   { background: #7c3aed; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
+            .badge-both   { background: #0f766e; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
+            .no-alerts { color: var(--muted); font-size: 0.95rem; padding: 8px 0; }
+        </style>
 </head>
 <body>
     <header class='page-header'>
@@ -1205,7 +1327,8 @@ function GenerateMainReportPage {
                 $userCardLink
             </article>
         </section>
-    </main>
+          $alertsHtml
+     </main>
 $footerHtml
 </body>
 </html>
@@ -1265,4 +1388,5 @@ if ($UserPrincipalName){
     GenerateQueryReport .\Resources\IdentityQueries.json Identity $IncludeSampleSet $identityQueryResults
 }
 
-GenerateMainReportPage -DeviceQueryData $deviceQueryResults -IdentityQueryData $identityQueryResults -DeviceEntity $info.DeviceId -UserEntity $info.UserPrincipalName
+$alertData = GetAlertsForEntity -DeviceId $info.DeviceId -UserPrincipalName $info.UserPrincipalName
+GenerateMainReportPage -DeviceQueryData $deviceQueryResults -IdentityQueryData $identityQueryResults -DeviceEntity $info.DeviceId -UserEntity $info.UserPrincipalName -DeviceAlerts $alertData.DeviceAlerts -IdentityAlerts $alertData.IdentityAlerts
