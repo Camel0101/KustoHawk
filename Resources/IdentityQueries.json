@@ -114,9 +114,21 @@
         "ResultCount":  0
     },
     {
-        "Name":  "Suspicious Mailbox Rule Created",
+        "Name":  "Mailbox rules crud activities",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nCloudAppEvents\r\n| where RawEventData.UserId =~ Upn\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| extend parsed = parse_json(RawEventData)\r\n| where Application == \u0027Microsoft Exchange Online\u0027 and  ActionType in (\u0027New-InboxRule\u0027, \u0027Set-InboxRule\u0027, \u0027Set-Mailbox\u0027, \u0027New-TransportRule\u0027, \u0027Set-TransportRule\u0027)\r\n| extend parsed = parse_json(RawEventData)\r\n| extend UPN = tostring(parsed.UserId)\r\n| extend Parameters = parsed.Parameters\r\n| mv-expand Parameters\r\n| extend Name = tostring(Parameters.Name)\r\n| extend Value = tostring(Parameters.Value)\r\n| extend packed = pack(Name, Value)\r\n| summarize PackedInfo = make_bag(packed), ActionType=any(ActionType) by ReportId, UPN\r\n| evaluate bag_unpack(PackedInfo)",
+        "Source":  "https://techcommunity.microsoft.com/blog/azuredataexplorer/aitm--bec-threat-hunting-with-kql/3885166",
+        "ResultCount":  0
+    },
+    {
+        "Name":  "Suspicious mailbox rule created",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nCloudAppEvents\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| where RawEventData.UserId =~ Upn\r\n| where Application == \u0027Microsoft Exchange Online\u0027\r\n| where ActionType == \u0027New-InboxRule\u0027\r\n| mv-apply p=todynamic(ActivityObjects) on \r\n(\r\nwhere p.Name == \u0027Name\u0027\r\n| extend RuleName=p.Value\r\n)\r\n| where isnotempty(RuleName)\r\n| where RuleName matches regex @\u0027^[^a-zA-Z0-9]*$\u0027\r\n| extend AccountUpn=tostring(RawEventData.UserId)\r\n| extend SessionId=tostring(RawEventData.SessionId)\r\n| project Timestamp, Application, ActionType, AccountUpn, RuleName, SessionId, IPAddress",
         "Source":  "https://github.com/reprise99/Sentinel-Queries/blob/main/Defender%20for%20Cloud%20Apps/DCA-SuspiciousMailboxRuleCreated.kql",
+        "ResultCount":  0
+    },
+    {
+        "Name":  "Mailbox permission activities",
+        "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\nCloudAppEvents\r\n| where RawEventData.UserId =~ Upn\r\n| where Timestamp \u003e ago(TimeFrame)\r\n| extend parsed = parse_json(RawEventData)\r\n| where Application == \u0027Microsoft Exchange Online\u0027 and  ActionType in (\u0027Add-MailboxPermission\u0027, \u0027New-ManagementRoleAssignment\u0027, \u0027Add-MailboxFolderPermission\u0027)\r\n| extend parsed = parse_json(RawEventData)\r\n| extend UPN = tostring(parsed.UserId)\r\n| extend Parameters = parsed.Parameters\r\n| mv-expand Parameters\r\n| extend Name = tostring(Parameters.Name)\r\n| extend Value = tostring(Parameters.Value)\r\n| extend packed = pack(Name, Value)\r\n| summarize PackedInfo = make_bag(packed), ActionType=any(ActionType) by ReportId, UPN\r\n| evaluate bag_unpack(PackedInfo)",
+        "Source":  "https://techcommunity.microsoft.com/blog/azuredataexplorer/aitm--bec-threat-hunting-with-kql/3885166",
         "ResultCount":  0
     }
 ]

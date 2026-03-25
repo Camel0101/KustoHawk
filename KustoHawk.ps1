@@ -133,7 +133,14 @@ function Connect-GraphAPI-ServicePrincipalCertificate {
 
 function Connect-GraphAPI-User {
     Write-Host "Connecting to Microsoft Graph API..." -ForegroundColor Cyan
-    Connect-MgGraph -Scopes "ThreatHunting.Read.All" -NoWelcome
+    $scopes = @('ThreatHunting.Read.All')
+
+    if (-not [string]::IsNullOrWhiteSpace($UserPrincipalName)) {
+        $scopes += 'UserAuthenticationMethod.Read.All'
+        Write-Host "Requesting additional delegated scope: UserAuthenticationMethod.Read.All" -ForegroundColor DarkCyan
+    }
+
+    Connect-MgGraph -Scopes $scopes -NoWelcome
 }
 
 function Connect-GraphAPI {
@@ -241,83 +248,166 @@ function GetEntityInfo {
         [string]$DeviceId,
         [string]$UserPrincipalName
     )
-    $UserInfo = "IdentityInfo
-        | where AccountUpn =~ '$UserPrincipalName'
-        | where Timestamp > ago(14d)
-        | summarize arg_max(Timestamp, *) by AccountUpn
-        | project Timestamp, AccountUpn, AccountObjectId, AccountName, RiskLevel, Department, JobTitle, Manager, PriviligedRoles = tostring(PrivilegedEntraPimRoles)"
-    $DeviceInfo = "DeviceInfo
-        | where DeviceId == '$DeviceId'
-        | where Timestamp > ago(14d)
-        | summarize arg_max(Timestamp, *) by DeviceId
-        | project Timestamp, DeviceName, PublicIP, OSPlatform, JoinType, AadDeviceId, MachineGroup, ExposureLevel"
-    if ($DeviceId){
-            $params = @{
-            Query = $DeviceInfo
-            Timespan = "P180D"
-        }
-        $Results = Start-MgSecurityHuntingQuery -BodyParameter $params
-        $Results.Results | ForEach-Object {
-        $data = [PSCustomObject]@{
-            Timestamp = $_.AdditionalProperties["Timestamp"]
-            DeviceName = $_.AdditionalProperties["DeviceName"]
-            PublicIP = $_.AdditionalProperties["PublicIP"]
-            OSPlatform = $_.AdditionalProperties["OSPlatform"]
-            JoinType = $_.AdditionalProperties["JoinType"]
-            AadDeviceId = $_.AdditionalProperties["AadDeviceId"]
-            MachineGroup = $_.AdditionalProperties["MachineGroup"]
-            ExposureLevel = $_.AdditionalProperties["ExposureLevel"]
-        }
-    }
-    Write-Host "Host information for $DeviceId" -ForegroundColor Cyan
-    # Table borders and headers
-    $border = "+-------------------+------------------------------------------------------------------------------------+"
-    $header = "| Details           | Values                                                                             |"
+    $deviceData = $null
+    $identityData = $null
 
-    Write-Host $border -ForegroundColor Cyan
-    Write-Host $header -ForegroundColor Cyan
-    Write-Host $border -ForegroundColor Cyan
+    $identityQuery = "IdentityInfo
+| where AccountUpn =~ '$UserPrincipalName'
+| where Timestamp > ago(14d)
+| summarize arg_max(Timestamp, *) by AccountUpn
+| project AccountUpn, AccountDisplayName, AccountObjectId, AccountName, CompanyName, Department, JobTitle, Manager, SourceProvider, CreatedDateTime, RiskLevel, RiskStatus, RiskScoreUpdateTime, PrivilegedEntraRoles = tostring(PrivilegedEntraPimRoles), GroupMembership"
 
-    foreach ($prop in $data.PSObject.Properties) {
-        $row = "| " + $prop.Name.PadRight(18) + "| " + $prop.Value.ToString().PadRight(83) + "|"
-        Write-Host $row -ForegroundColor Cyan
-    }
+    $deviceQuery = "DeviceInfo
+| where DeviceId == '$DeviceId'
+| where Timestamp > ago(14d)
+| summarize arg_max(Timestamp, *) by DeviceId
+| extend Tags = set_union(todynamic(DeviceDynamicTags), todynamic(DeviceManualTags))
+| join kind=leftouter (DeviceNetworkInfo | summarize arg_max(Timestamp, Timestamp, IPAddresses, DeviceId, DnsAddresses) by DeviceId ) on DeviceId
+| project DeviceId, DeviceName, Tags, OSPlatform, CloudPlatforms, JoinType, AadDeviceId, MachineGroup, ExposureLevel, PublicIP, AssignedIPs = IPAddresses, DnsAddresses"
 
-    Write-Host $border -ForegroundColor Cyan
-    }
-    if ($UserPrincipalName){
-            $params = @{
-            Query = $UserInfo
-            Timespan = "P180D"
+    $deviceFields = @('DeviceId', 'DeviceName', 'Tags', 'OSPlatform', 'CloudPlatforms', 'JoinType', 'AadDeviceId', 'MachineGroup', 'ExposureLevel', 'PublicIP', 'AssignedIPs', 'DnsAddresses')
+    $identityFields = @('AccountUpn', 'AccountDisplayName', 'AccountObjectId', 'AccountName', 'CompanyName', 'Department', 'JobTitle', 'Manager', 'SourceProvider', 'CreatedDateTime', 'RiskLevel', 'RiskStatus', 'RiskScoreUpdateTime', 'PrivilegedEntraPimRoles', 'GroupMembership')
+
+    if ($DeviceId) {
+        try {
+            $deviceResult = Start-MgSecurityHuntingQuery -BodyParameter @{ Query = $deviceQuery; Timespan = 'P180D' }
+            $deviceRow = @($deviceResult.Results)[0]
+            if ($deviceRow -and $deviceRow.AdditionalProperties) {
+                $deviceData = [PSCustomObject]@{}
+                foreach ($field in $deviceFields) {
+                    $rawValue = $deviceRow.AdditionalProperties[$field]
+                    if ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
+                        $value = ($rawValue | ForEach-Object { "$_" }) -join ', '
+                    } else {
+                        $value = if ($null -eq $rawValue) { '' } else { "$rawValue" }
+                    }
+                    $deviceData | Add-Member -NotePropertyName $field -NotePropertyValue $value -Force
+                }
+            }
+        } catch {
+            Write-Warning "Failed to retrieve device information: $_"
         }
-        $Results = Start-MgSecurityHuntingQuery -BodyParameter $params
-        $Results.Results | ForEach-Object {
-        $data = [PSCustomObject]@{
-            Timestamp = $_.AdditionalProperties["Timestamp"]
-            AccountUpn = $_.AdditionalProperties["AccountUpn"]
-            AccountName = $_.AdditionalProperties["AccountName"]
-            RiskLevel = $_.AdditionalProperties["RiskLevel"]
-            Department = $_.AdditionalProperties["Department"]
-            JobTitle = $_.AdditionalProperties["JobTitle"]
-            Manager = $_.AdditionalProperties["Manager"]
-            PriviligedRoles = $_.AdditionalProperties["PriviligedRoles"]
+
+        if ($deviceData) {
+            Write-Host "Host information for $DeviceId" -ForegroundColor Cyan
+            $border = "+-------------------+------------------------------------------------------------------------------------+"
+            $header = "| Details           | Values                                                                             |"
+            Write-Host $border -ForegroundColor Cyan
+            Write-Host $header -ForegroundColor Cyan
+            Write-Host $border -ForegroundColor Cyan
+            foreach ($prop in $deviceData.PSObject.Properties) {
+                $valueText = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
+                $row = "| " + $prop.Name.PadRight(18) + "| " + $valueText.PadRight(83) + "|"
+                Write-Host $row -ForegroundColor Cyan
+            }
+            Write-Host $border -ForegroundColor Cyan
         }
     }
-    Write-Host "Identity information for $UserPrincipalName" -ForegroundColor Cyan
-    # Table borders and headers
-    $border = "+-------------------+------------------------------------------------------------------------------------+"
-    $header = "| Details           | Values                                                                             |"
 
-    Write-Host $border -ForegroundColor Cyan
-    Write-Host $header -ForegroundColor Cyan
-    Write-Host $border -ForegroundColor Cyan
+    if ($UserPrincipalName) {
+        try {
+            $identityResult = Start-MgSecurityHuntingQuery -BodyParameter @{ Query = $identityQuery; Timespan = 'P180D' }
+            $identityRow = @($identityResult.Results)[0]
+            if ($identityRow -and $identityRow.AdditionalProperties) {
+                $identityData = [PSCustomObject]@{}
+                foreach ($field in $identityFields) {
+                    $rawValue = $identityRow.AdditionalProperties[$field]
+                    if ($rawValue -is [System.Collections.IEnumerable] -and -not ($rawValue -is [string])) {
+                        $value = ($rawValue | ForEach-Object { "$_" }) -join ', '
+                    } else {
+                        $value = if ($null -eq $rawValue) { '' } else { "$rawValue" }
+                    }
+                    $identityData | Add-Member -NotePropertyName $field -NotePropertyValue $value -Force
+                }
+            }
+        } catch {
+            Write-Warning "Failed to retrieve identity information: $_"
+        }
 
-    foreach ($prop in $data.PSObject.Properties) {
-        $row = "| " + $prop.Name.PadRight(18) + "| " + $prop.Value.ToString().PadRight(83) + "|"
-        Write-Host $row -ForegroundColor Cyan
+        # Retrieve authentication methods via Graph REST API (requires UserAuthenticationMethod.Read.All)
+        $authMethodsText = 'Not enough privileges to collect data'
+        $authMethodsCountText = 'Not enough privileges to collect data'
+        try {
+            $authUri = "https://graph.microsoft.com/v1.0/users/$([System.Uri]::EscapeDataString($UserPrincipalName))/authentication/methods"
+            $authResponse = Invoke-MgGraphRequest -Method GET -Uri $authUri -ErrorAction Stop
+            if ($authResponse -and $authResponse.value) {
+                $typeMap = @{
+                    'microsoftAuthenticatorAuthenticationMethod'  = 'Microsoft Authenticator'
+                    'passwordAuthenticationMethod'                = 'Password'
+                    'phoneAuthenticationMethod'                   = 'Phone'
+                    'fido2AuthenticationMethod'                   = 'FIDO2 Key'
+                    'emailAuthenticationMethod'                   = 'Email OTP'
+                    'softwareOathAuthenticationMethod'            = 'Software OATH (TOTP)'
+                    'temporaryAccessPassAuthenticationMethod'     = 'Temporary Access Pass'
+                    'windowsHelloForBusinessAuthenticationMethod' = 'Windows Hello for Business'
+                    'hardwareOathAuthenticationMethod'            = 'Hardware OATH'
+                }
+
+                $methodDetails = @()
+                foreach ($method in @($authResponse.value)) {
+                    $odataType = "$($method['@odata.type'])"
+                    $shortType = if ($odataType) { $odataType -replace '#microsoft\.graph\.', '' } else { 'unknown' }
+                    $friendlyType = if ($typeMap.ContainsKey($shortType)) { $typeMap[$shortType] } else { $shortType }
+
+                    $displayName = if ($method['displayName']) {
+                        "$($method['displayName'])"
+                    } else {
+                        'Unnamed method'
+                    }
+
+                    $createdRaw = if ($method['createdDateTime']) {
+                        "$($method['createdDateTime'])"
+                    } elseif ($method['creationDateTime']) {
+                        "$($method['creationDateTime'])"
+                    } else {
+                        $null
+                    }
+
+                    $createdText = 'Unknown'
+                    if (-not [string]::IsNullOrWhiteSpace($createdRaw)) {
+                        $createdParsed = $null
+                        if ([datetime]::TryParse($createdRaw, [ref]$createdParsed)) {
+                            $createdText = $createdParsed.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
+                        } else {
+                            $createdText = $createdRaw
+                        }
+                    }
+
+                    $methodDetails += ("Type: {0} | Name: {1} | Created: {2}" -f $friendlyType, $displayName, $createdText)
+                }
+
+                $authMethodsCountText = $methodDetails.Count
+                $authMethodsText = if ($methodDetails.Count -gt 0) { $methodDetails -join '; ' } else { 'None registered' }
+            } else {
+                $authMethodsCountText = '0'
+                $authMethodsText = 'None registered'
+            }
+        } catch {
+            Write-Warning "Could not retrieve authentication methods (insufficient privileges or error): $_"
+        }
+        if ($null -eq $identityData) { $identityData = [PSCustomObject]@{} }
+        $identityData | Add-Member -NotePropertyName 'AuthenticationMethodsCount' -NotePropertyValue $authMethodsCountText -Force
+        $identityData | Add-Member -NotePropertyName 'AuthenticationMethods' -NotePropertyValue $authMethodsText -Force
+
+        if ($identityData) {
+            Write-Host "Identity information for $UserPrincipalName" -ForegroundColor Cyan
+            $border = "+-------------------+------------------------------------------------------------------------------------+"
+            $header = "| Details           | Values                                                                             |"
+            Write-Host $border -ForegroundColor Cyan
+            Write-Host $header -ForegroundColor Cyan
+            Write-Host $border -ForegroundColor Cyan
+            foreach ($prop in $identityData.PSObject.Properties) {
+                $valueText = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
+                $row = "| " + $prop.Name.PadRight(18) + "| " + $valueText.PadRight(83) + "|"
+                Write-Host $row -ForegroundColor Cyan
+            }
+            Write-Host $border -ForegroundColor Cyan
+        }
     }
 
-    Write-Host $border -ForegroundColor Cyan
+    return @{
+        DeviceInfo = $deviceData
+        IdentityInfo = $identityData
     }
 }   
 
@@ -435,7 +525,7 @@ function RunQueriesFromFile {
 }
 
 function Get-LogoBase64 {
-    $logoPath = Join-Path -Path $PSScriptRoot -ChildPath 'Logo-NoBackground.png'
+    $logoPath = Join-Path -Path $PSScriptRoot -ChildPath 'Images/Logo-NoBackground.png'
     if (Test-Path $logoPath) {
         return [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($logoPath))
     }
@@ -517,6 +607,7 @@ function GenerateQueryReport {
 <html lang='en'>
 <head>
     <meta charset='UTF-8'>
+    <script>(function(){var t=localStorage.getItem('kustohawk-theme');if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
     <title>Executed Queries Report</title>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <style>
@@ -607,13 +698,14 @@ function GenerateQueryReport {
         .report-table-wrap {
             width: 100%;
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
             border: 1px solid var(--neutral-stroke-1);
             border-radius: 8px;
             background: var(--neutral-bg-1);
         }
         .report-table {
-            width: max-content;
-            min-width: 100%;
+            width: 100%;
+            min-width: 980px;
             border-collapse: separate;
             border-spacing: 0;
             background: var(--neutral-bg-1);
@@ -637,10 +729,10 @@ function GenerateQueryReport {
         .report-table tbody tr.query-row:hover {
             background: var(--neutral-bg-2);
         }
-        .col-name { min-width: 220px; }
-        .col-query { min-width: 560px; }
-        .col-hits { min-width: 90px; text-align: center; white-space: nowrap; }
-        .col-source { min-width: 180px; }
+        .col-name { width: 20%; min-width: 180px; }
+        .col-query { width: 58%; min-width: 380px; }
+        .col-hits { width: 1%; min-width: 90px; text-align: center; white-space: nowrap; }
+        .col-source { width: 21%; min-width: 170px; }
         .sort-button {
             border: none;
             background: transparent;
@@ -657,10 +749,10 @@ function GenerateQueryReport {
         }
         .cell-name {
             font-weight: 700;
-            word-break: break-word;
+            overflow-wrap: anywhere;
         }
         .cell-source {
-            word-break: break-word;
+            overflow-wrap: anywhere;
         }
         .query-cell {
             position: relative;
@@ -705,6 +797,7 @@ function GenerateQueryReport {
             margin: 0;
             overflow-x: auto;
             white-space: pre-wrap;
+            word-break: break-word;
             max-height: 280px;
         }
         .cell-hits {
@@ -806,8 +899,29 @@ function GenerateQueryReport {
             font-weight: 500;
         }
         a:hover { text-decoration: underline; color: #005fa3; }
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 7px; height: 7px; }
+        ::-webkit-scrollbar-track { background: var(--neutral-bg-3); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: var(--brand-bg-1); border-radius: 4px; border: 2px solid var(--neutral-bg-3); }
+        ::-webkit-scrollbar-thumb:hover { background: #0a5198; }
+        * { scrollbar-width: thin; scrollbar-color: var(--brand-bg-1) var(--neutral-bg-3); }
+        /* Theme toggle */
+        .theme-toggle {
+            background: var(--neutral-bg-2);
+            border: 1px solid var(--neutral-stroke-2);
+            color: var(--neutral-foreground-1);
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            white-space: nowrap;
+            transition: background 0.15s;
+        }
+        .theme-toggle:hover { background: var(--neutral-bg-3); }
         @media (prefers-color-scheme: dark) {
-            :root {
+            html:not([data-theme='light']) {
                 --neutral-bg-1: #1e2231;
                 --neutral-bg-2: #252a3a;
                 --neutral-bg-3: #2d3347;
@@ -819,29 +933,36 @@ function GenerateQueryReport {
                 --brand-bg-1: #0f6cbd;
                 --brand-bg-2: #1a3556;
             }
-            body {
-                background: linear-gradient(180deg, #141824 0%, #1a2030 100%);
-            }
-            .page-header {
-                background: rgba(20, 24, 36, 0.95);
-            }
-            .nav-link {
-                background: var(--neutral-bg-2);
-            }
-            .sample-table-wrap {
-                background: var(--neutral-bg-2);
-            }
-            .sample-table thead th {
-                background: var(--neutral-bg-3);
-            }
-            .footer {
-                background: #1a2030;
-                border-top-color: #3a4055;
-                color: #8d99ae;
-            }
-            a { color: #4da3e8; }
-            a:hover { color: #76c0f5; }
+            html:not([data-theme='light']) body { background: linear-gradient(180deg, #141824 0%, #1a2030 100%); }
+            html:not([data-theme='light']) .page-header { background: rgba(20, 24, 36, 0.95); }
+            html:not([data-theme='light']) .nav-link { background: var(--neutral-bg-2); }
+            html:not([data-theme='light']) .sample-table-wrap { background: var(--neutral-bg-2); }
+            html:not([data-theme='light']) .sample-table thead th { background: var(--neutral-bg-3); }
+            html:not([data-theme='light']) .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
+            html:not([data-theme='light']) a { color: #4da3e8; }
+            html:not([data-theme='light']) a:hover { color: #76c0f5; }
         }
+        /* Manual dark override (system is light, user chose dark) */
+        html[data-theme='dark'] {
+            --neutral-bg-1: #1e2231;
+            --neutral-bg-2: #252a3a;
+            --neutral-bg-3: #2d3347;
+            --neutral-stroke-1: #3a4055;
+            --neutral-stroke-2: #454d66;
+            --neutral-foreground-1: #e8eaf0;
+            --neutral-foreground-2: #9ca3af;
+            --brand-foreground-1: #4da3e8;
+            --brand-bg-1: #0f6cbd;
+            --brand-bg-2: #1a3556;
+        }
+        html[data-theme='dark'] body { background: linear-gradient(180deg, #141824 0%, #1a2030 100%); }
+        html[data-theme='dark'] .page-header { background: rgba(20, 24, 36, 0.95); }
+        html[data-theme='dark'] .nav-link { background: var(--neutral-bg-2); }
+        html[data-theme='dark'] .sample-table-wrap { background: var(--neutral-bg-2); }
+        html[data-theme='dark'] .sample-table thead th { background: var(--neutral-bg-3); }
+        html[data-theme='dark'] .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
+        html[data-theme='dark'] a { color: #4da3e8; }
+        html[data-theme='dark'] a:hover { color: #76c0f5; }
     </style>
 </head>
 <body>
@@ -853,6 +974,7 @@ function GenerateQueryReport {
                 $deviceNav
                 $userNav
             </nav>
+            <button id='themeToggle' class='theme-toggle' type='button' aria-label='Toggle theme'>&#x1F319; Dark</button>
         </div>
     </header>
     <div class='container'>
@@ -1007,6 +1129,28 @@ $html += @"
                 });
             }
         })();
+
+        // Theme toggle
+        (function() {
+            var html = document.documentElement;
+            var btn = document.getElementById('themeToggle');
+            function isDark() {
+                var t = html.getAttribute('data-theme');
+                return t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            }
+            function updateBtn() {
+                if (btn) btn.textContent = isDark() ? '\u2600 Light' : '\uD83C\uDF19 Dark';
+            }
+            if (btn) {
+                updateBtn();
+                btn.addEventListener('click', function() {
+                    var newTheme = isDark() ? 'light' : 'dark';
+                    html.setAttribute('data-theme', newTheme);
+                    localStorage.setItem('kustohawk-theme', newTheme);
+                    updateBtn();
+                });
+            }
+        })();
     </script>
 $footerHtml
 </body>
@@ -1033,7 +1177,9 @@ function GenerateMainReportPage {
         [string]$DeviceEntity,
            [string]$UserEntity,
            [object[]]$DeviceAlerts,
-           [object[]]$IdentityAlerts
+           [object[]]$IdentityAlerts,
+           [PSObject]$DeviceInfoData,
+           [PSObject]$IdentityInfoData
     )
 
     $logoBase64 = Get-LogoBase64
@@ -1101,6 +1247,35 @@ function GenerateMainReportPage {
 
     $footerHtml = GetReportFooterHtml
 
+    $deviceInfoHtml = ''
+    if ($DeviceInfoData -and $DeviceInfoData.PSObject.Properties.Count -gt 0) {
+        $rows = ''
+        foreach ($prop in $DeviceInfoData.PSObject.Properties) {
+            $field = [System.Web.HttpUtility]::HtmlEncode($prop.Name)
+            $rawValue = if ($null -eq $prop.Value) { '' } else { "$($prop.Value)" }
+            $value = [System.Web.HttpUtility]::HtmlEncode($rawValue)
+            $rows += "<tr><td class='field-col'>$field</td><td>$value</td></tr>"
+        }
+        $deviceInfoHtml = "<article class='card entity-card'><h2>Device Info</h2><div class='entity-table-wrap'><table class='entity-table'><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>$rows</tbody></table></div></article>"
+    }
+
+    $identityInfoHtml = ''
+    if ($IdentityInfoData -and $IdentityInfoData.PSObject.Properties.Count -gt 0) {
+        $rows = ''
+        foreach ($prop in $IdentityInfoData.PSObject.Properties) {
+            $field = [System.Web.HttpUtility]::HtmlEncode($prop.Name)
+            $rawValue = if ($null -eq $prop.Value) { '' } else { "$($prop.Value)" }
+            $value = [System.Web.HttpUtility]::HtmlEncode($rawValue)
+            $rows += "<tr><td class='field-col'>$field</td><td>$value</td></tr>"
+        }
+        $identityInfoHtml = "<article class='card entity-card'><h2>Identity Info</h2><div class='entity-table-wrap'><table class='entity-table'><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>$rows</tbody></table></div></article>"
+    }
+
+    $entityInfoSection = ''
+    if ($deviceInfoHtml -or $identityInfoHtml) {
+        $entityInfoSection = "<section class='entity-grid'>$deviceInfoHtml$identityInfoHtml</section>"
+    }
+
     # Build combined alerts HTML
     $allAlerts = @()
     if ($DeviceAlerts)   { $allAlerts += $DeviceAlerts }
@@ -1159,6 +1334,7 @@ function GenerateMainReportPage {
 <html lang='en'>
 <head>
     <meta charset='UTF-8'>
+    <script>(function(){var t=localStorage.getItem('kustohawk-theme');if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <title>KustoHawk Reports</title>
     <style>
@@ -1240,12 +1416,21 @@ function GenerateMainReportPage {
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
             gap: 16px;
         }
+        .entity-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
         .card {
             background: var(--surface);
             border: 1px solid var(--stroke);
             border-radius: 12px;
             padding: 18px;
             box-shadow: 0 8px 24px rgba(10, 21, 40, 0.06);
+        }
+        .entity-card {
+            overflow: hidden;
         }
         .card h2 {
             margin: 0 0 10px 0;
@@ -1323,6 +1508,39 @@ function GenerateMainReportPage {
         }
         .dot-hit { background: #0f6cbd; }
         .dot-nohit { background: #d1d5db; }
+        .entity-table-wrap {
+            overflow-x: auto;
+            border: 1px solid var(--stroke);
+            border-radius: 8px;
+            background: var(--surface);
+        }
+        .entity-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            min-width: 520px;
+        }
+        .entity-table thead th {
+            background: #f3f4f6;
+            font-weight: 700;
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--stroke);
+        }
+        .entity-table tbody td {
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--stroke);
+            vertical-align: top;
+            word-break: break-word;
+        }
+        .entity-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .field-col {
+            width: 220px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
         @media (max-width: 900px) {
             .overview-grid {
                 grid-template-columns: 1fr;
@@ -1366,7 +1584,7 @@ function GenerateMainReportPage {
             font-family: 'Segoe UI', 'Arial', sans-serif;
         }
         @media (prefers-color-scheme: dark) {
-            :root {
+            html:not([data-theme='light']) {
                 --bg: #141824;
                 --surface: #1e2231;
                 --text: #e8eaf0;
@@ -1374,35 +1592,57 @@ function GenerateMainReportPage {
                 --brand: #4da3e8;
                 --stroke: #3a4055;
             }
-            body {
-                background: linear-gradient(180deg, #141824 0%, #1a2030 100%);
-            }
-            .page-header {
-                background: rgba(20, 24, 36, 0.95);
-            }
-            .nav-link {
-                background: var(--surface);
-            }
-            .meta { color: #cbd5e1; }
-            .pie-center {
-                background: var(--surface);
-                color: var(--text);
-            }
-            .pie-chart {
-                box-shadow: inset 0 0 0 1px var(--stroke);
-            }
-            .alerts-table thead th {
-                background: #252a3a;
-            }
-            .alerts-table tbody tr:hover {
-                background: #252a3a;
-            }
-            .footer {
-                background: #1a2030;
-                border-top-color: #3a4055;
-                color: #8d99ae;
-            }
+            html:not([data-theme='light']) body { background: linear-gradient(180deg, #141824 0%, #1a2030 100%); }
+            html:not([data-theme='light']) .page-header { background: rgba(20, 24, 36, 0.95); }
+            html:not([data-theme='light']) .nav-link { background: var(--surface); }
+            html:not([data-theme='light']) .meta { color: #cbd5e1; }
+            html:not([data-theme='light']) .pie-center { background: var(--surface); color: var(--text); }
+            html:not([data-theme='light']) .pie-chart { box-shadow: inset 0 0 0 1px var(--stroke); }
+            html:not([data-theme='light']) .alerts-table thead th { background: #252a3a; }
+            html:not([data-theme='light']) .alerts-table tbody tr:hover { background: #252a3a; }
+            html:not([data-theme='light']) .entity-table thead th { background: #252a3a; }
+            html:not([data-theme='light']) .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
         }
+        /* Manual dark override */
+        html[data-theme='dark'] {
+            --bg: #141824;
+            --surface: #1e2231;
+            --text: #e8eaf0;
+            --muted: #9ca3af;
+            --brand: #4da3e8;
+            --stroke: #3a4055;
+        }
+        html[data-theme='dark'] body { background: linear-gradient(180deg, #141824 0%, #1a2030 100%); }
+        html[data-theme='dark'] .page-header { background: rgba(20, 24, 36, 0.95); }
+        html[data-theme='dark'] .nav-link { background: var(--surface); }
+        html[data-theme='dark'] .meta { color: #cbd5e1; }
+        html[data-theme='dark'] .pie-center { background: var(--surface); color: var(--text); }
+        html[data-theme='dark'] .pie-chart { box-shadow: inset 0 0 0 1px var(--stroke); }
+        html[data-theme='dark'] .alerts-table thead th { background: #252a3a; }
+        html[data-theme='dark'] .alerts-table tbody tr:hover { background: #252a3a; }
+        html[data-theme='dark'] .entity-table thead th { background: #252a3a; }
+        html[data-theme='dark'] .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 7px; height: 7px; }
+        ::-webkit-scrollbar-track { background: var(--surface); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: var(--brand); border-radius: 4px; border: 2px solid var(--surface); }
+        ::-webkit-scrollbar-thumb:hover { background: #0a5198; }
+        * { scrollbar-width: thin; scrollbar-color: var(--brand) var(--surface); }
+        /* Theme toggle */
+        .theme-toggle {
+            background: var(--surface);
+            border: 1px solid var(--stroke);
+            color: var(--text);
+            border-radius: 999px;
+            padding: 6px 14px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            white-space: nowrap;
+            transition: background 0.15s;
+        }
+        .theme-toggle:hover { filter: brightness(0.9); }
         </style>
 </head>
 <body>
@@ -1414,6 +1654,7 @@ function GenerateMainReportPage {
                 $(if ($devicePageFile) { "<a class='nav-link' href='$devicePageFile'>Device</a>" } else { "<span class='nav-link disabled'>Device</span>" })
                 $(if ($userPageFile) { "<a class='nav-link' href='$userPageFile'>User</a>" } else { "<span class='nav-link disabled'>User</span>" })
             </nav>
+            <button id='themeToggle' class='theme-toggle' type='button' aria-label='Toggle theme'>&#x1F319; Dark</button>
         </div>
     </header>
     <main class='container'>
@@ -1450,8 +1691,31 @@ function GenerateMainReportPage {
                 $userCardLink
             </article>
         </section>
+                $entityInfoSection
           $alertsHtml
      </main>
+    <script>
+        (function() {
+            var html = document.documentElement;
+            var btn = document.getElementById('themeToggle');
+            function isDark() {
+                var t = html.getAttribute('data-theme');
+                return t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            }
+            function updateBtn() {
+                if (btn) btn.textContent = isDark() ? '\u2600 Light' : '\uD83C\uDF19 Dark';
+            }
+            if (btn) {
+                updateBtn();
+                btn.addEventListener('click', function() {
+                    var newTheme = isDark() ? 'light' : 'dark';
+                    html.setAttribute('data-theme', newTheme);
+                    localStorage.setItem('kustohawk-theme', newTheme);
+                    updateBtn();
+                });
+            }
+        })();
+    </script>
 $footerHtml
 </body>
 </html>
@@ -1493,7 +1757,7 @@ if (-not (Ensure-GraphSecurityModule)) {
 
 $info = ValidateInputParameters
 Connect-GraphAPI
-GetEntityInfo $info.DeviceId $info.UserPrincipalName
+$entityInfo = GetEntityInfo $info.DeviceId $info.UserPrincipalName
 if ($DeviceId){
     $json = Get-Content -Raw -Path '.\Resources\DeviceQueries.json' | ConvertFrom-Json
     $count = $json.Count
@@ -1512,4 +1776,4 @@ if ($UserPrincipalName){
 }
 
 $alertData = GetAlertsForEntity -DeviceId $info.DeviceId -UserPrincipalName $info.UserPrincipalName
-GenerateMainReportPage -DeviceQueryData $deviceQueryResults -IdentityQueryData $identityQueryResults -DeviceEntity $info.DeviceId -UserEntity $info.UserPrincipalName -DeviceAlerts $alertData.DeviceAlerts -IdentityAlerts $alertData.IdentityAlerts
+GenerateMainReportPage -DeviceQueryData $deviceQueryResults -IdentityQueryData $identityQueryResults -DeviceEntity $info.DeviceId -UserEntity $info.UserPrincipalName -DeviceAlerts $alertData.DeviceAlerts -IdentityAlerts $alertData.IdentityAlerts -DeviceInfoData $entityInfo.DeviceInfo -IdentityInfoData $entityInfo.IdentityInfo

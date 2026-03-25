@@ -1,19 +1,18 @@
 $Query = "let Upn = '{UserPrincipalName}';
 let TimeFrame = {TimeFrame};
 CloudAppEvents
-| where Timestamp > ago(TimeFrame)
 | where RawEventData.UserId =~ Upn
-| where Application == 'Microsoft Exchange Online'
-| where ActionType == 'New-InboxRule'
-| mv-apply p=todynamic(ActivityObjects) on 
-(
-where p.Name == 'Name'
-| extend RuleName=p.Value
-)
-| where isnotempty(RuleName)
-| where RuleName matches regex @'^[^a-zA-Z0-9]*$'
-| extend AccountUpn=tostring(RawEventData.UserId)
-| extend SessionId=tostring(RawEventData.SessionId)
-| project Timestamp, Application, ActionType, AccountUpn, RuleName, SessionId, IPAddress"
+| where Timestamp > ago(TimeFrame)
+| extend parsed = parse_json(RawEventData)
+| where Application == 'Microsoft Exchange Online' and  ActionType in ('New-InboxRule', 'Set-InboxRule', 'Set-Mailbox', 'New-TransportRule', 'Set-TransportRule')
+| extend parsed = parse_json(RawEventData)
+| extend UPN = tostring(parsed.UserId)
+| extend Parameters = parsed.Parameters
+| mv-expand Parameters
+| extend Name = tostring(Parameters.Name)
+| extend Value = tostring(Parameters.Value)
+| extend packed = pack(Name, Value)
+| summarize PackedInfo = make_bag(packed), ActionType=any(ActionType) by ReportId, UPN
+| evaluate bag_unpack(PackedInfo))"
 $Output = $Query -replace '\r','\r' -replace '\n','\n'
 Write-Output $Output
