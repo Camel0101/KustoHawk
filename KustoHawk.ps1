@@ -17,6 +17,10 @@
 .PARAMETER AuthenticationMethod
     The authentication method to use for Microsoft Graph API. Required. Must be one of: User, ServicePrincipalSecret, ServicePrincipalCertificate.
 
+.PARAMETER AuthenticationTier
+    The authentication permission tier to use. Tiers are defined in Resources\AuthenticationTiers.yaml.
+    Supported values: Tier1, Tier2, Tier3.
+
 .PARAMETER CertificateThumbprint
     Optional certificate thumbprint used when -AuthenticationMethod ServicePrincipalCertificate is selected.
     If not specified, the script uses $DefaultCertificateThumbprint from the service principal variables section.
@@ -69,6 +73,7 @@ param (
         [Parameter(Mandatory = $false)][Alias('s')][switch]$IncludeSampleSet,
         [Parameter(Mandatory = $false)][Alias('t')][string]$TimeFrame = "7d",
         [Parameter(Mandatory = $false)][string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)][ValidateSet("Tier1", "Tier2", "Tier3")][string]$AuthenticationTier = "Tier1",
         [Parameter(Mandatory = $true)][ValidateSet("User", "ServicePrincipalSecret", "ServicePrincipalCertificate")][string]$AuthenticationMethod
     )
 
@@ -102,9 +107,128 @@ $Secret = "<Secret>" #Certificate Authentication is recommended.
 $DefaultCertificateThumbprint = ""
 $SecureClientSecret = ConvertTo-SecureString -String $Secret -AsPlainText -Force
 $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppID, $SecureClientSecret
+$AuthTierConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'Resources\AuthenticationTiers.yaml'
+$script:SelectedAuthTierConfig = $null
+
+function ConvertFrom-SimpleTierYaml {
+    param (
+        [string[]]$Lines
+    )
+
+    $tiers = @{}
+    $currentTier = $null
+    $inPermissions = $false
+
+    foreach ($rawLine in $Lines) {
+        $line = $rawLine -replace "`t", '    '
+        if ($line -match '^\s*$' -or $line -match '^\s*#') {
+            continue
+        }
+
+        if ($line -match '^\s*tiers\s*:\s*$') {
+            continue
+        }
+
+        if ($line -match '^\s{2}([A-Za-z0-9_-]+)\s*:\s*$') {
+            $currentTier = $matches[1].ToLower()
+            $tiers[$currentTier] = @{ permissions = @() }
+            $inPermissions = $false
+            continue
+        }
+
+        if ($line -match '^\s{4}permissions\s*:\s*$') {
+            $inPermissions = $true
+            continue
+        }
+
+        if ($line -match '^\s{6}-\s*(.+?)\s*$') {
+            if ($currentTier -and $inPermissions) {
+                $tiers[$currentTier]['permissions'] += $matches[1]
+            }
+            continue
+        }
+    }
+
+    return @{ tiers = $tiers }
+}
+
+function Get-AuthenticationTierConfig {
+    param (
+        [string]$ConfigPath,
+        [string]$TierName
+    )
+
+    if (-not (Test-Path -Path $ConfigPath)) {
+        throw "Authentication tier config file was not found at '$ConfigPath'."
+    }
+
+    $yamlText = Get-Content -Raw -Path $ConfigPath
+    if ([string]::IsNullOrWhiteSpace($yamlText)) {
+        throw "Authentication tier config file '$ConfigPath' is empty."
+    }
+
+    $parsed = $null
+    if (Get-Command -Name ConvertFrom-Yaml -ErrorAction SilentlyContinue) {
+        $parsed = $yamlText | ConvertFrom-Yaml
+    } else {
+        $parsed = ConvertFrom-SimpleTierYaml -Lines (Get-Content -Path $ConfigPath)
+    }
+
+    if (-not $parsed -or -not $parsed.tiers) {
+        throw "Authentication tier config file '$ConfigPath' does not contain a 'tiers' section."
+    }
+
+    $tierKey = $TierName.ToLower()
+    $tierData = $null
+
+    if ($parsed.tiers -is [System.Collections.IDictionary]) {
+        $tierData = $parsed.tiers[$tierKey]
+    } elseif ($parsed.tiers.PSObject.Properties.Match($tierKey).Count -gt 0) {
+        $tierData = $parsed.tiers.$tierKey
+    }
+
+    if (-not $tierData) {
+        throw "Authentication tier '$TierName' was not found in '$ConfigPath'."
+    }
+
+    $permissions = @($tierData.permissions | Where-Object { -not [string]::IsNullOrWhiteSpace("$_") } | Select-Object -Unique)
+
+    return [PSCustomObject]@{
+        Name        = $TierName
+        Permissions = $permissions
+    }
+}
+
+function Get-EffectiveTierScopes {
+    param (
+        [PSObject]$TierConfig
+    )
+
+    $scopes = @($TierConfig.Permissions)
+
+    # Only request auth method permissions when a UPN investigation is in scope.
+    if ([string]::IsNullOrWhiteSpace($UserPrincipalName)) {
+        $scopes = @($scopes | Where-Object { $_ -ne 'UserAuthenticationMethod.Read.All' })
+    }
+
+    return @($scopes | Select-Object -Unique)
+}
+
+function Test-AuthMethodsScopeEnabled {
+    if (-not $script:SelectedAuthTierConfig) {
+        return $false
+    }
+
+    return @($script:SelectedAuthTierConfig.Permissions | Where-Object { $_ -eq 'UserAuthenticationMethod.Read.All' }).Count -gt 0
+}
 
 function Connect-GraphAPI-ServicePrincipalSecret {
     Write-Host "Connecting to Microsoft Graph API with AppId $AppID..." -ForegroundColor Cyan
+    $requiredPermissions = Get-EffectiveTierScopes -TierConfig $script:SelectedAuthTierConfig
+    if ($requiredPermissions.Count -gt 0) {
+        Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
+        Write-Host "Required permissions: $($requiredPermissions -join ', ')" -ForegroundColor DarkCyan
+    }
     Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $ClientSecretCredential
 }
 
@@ -128,17 +252,23 @@ function Connect-GraphAPI-ServicePrincipalCertificate {
     }
 
     Write-Host "Connecting to Microsoft Graph API with AppId $AppID using certificate thumbprint $EffectiveThumbprint..." -ForegroundColor Cyan
+    $requiredPermissions = Get-EffectiveTierScopes -TierConfig $script:SelectedAuthTierConfig
+    if ($requiredPermissions.Count -gt 0) {
+        Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
+        Write-Host "Required permissions: $($requiredPermissions -join ', ')" -ForegroundColor DarkCyan
+    }
     Connect-MgGraph -ClientId $AppID -TenantId $TenantID -CertificateThumbprint $EffectiveThumbprint -NoWelcome
 }
 
 function Connect-GraphAPI-User {
     Write-Host "Connecting to Microsoft Graph API..." -ForegroundColor Cyan
-    $scopes = @('ThreatHunting.Read.All')
-
-    if (-not [string]::IsNullOrWhiteSpace($UserPrincipalName)) {
-        $scopes += 'UserAuthenticationMethod.Read.All'
-        Write-Host "Requesting additional delegated scope: UserAuthenticationMethod.Read.All" -ForegroundColor DarkCyan
+    $scopes = Get-EffectiveTierScopes -TierConfig $script:SelectedAuthTierConfig
+    if ($scopes.Count -eq 0) {
+        throw "No permissions remain after evaluating tier '$($script:SelectedAuthTierConfig.Name)'."
     }
+
+    Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
+    Write-Host "Required permissions: $($scopes -join ', ')" -ForegroundColor DarkCyan
 
     Connect-MgGraph -Scopes $scopes -NoWelcome
 }
@@ -324,66 +454,70 @@ function GetEntityInfo {
             Write-Warning "Failed to retrieve identity information: $_"
         }
 
-        # Retrieve authentication methods via Graph REST API (requires UserAuthenticationMethod.Read.All)
+        # Retrieve authentication methods only when enabled by the selected tier.
         $authMethodsText = 'Not enough privileges to collect data'
         $authMethodsCountText = 'Not enough privileges to collect data'
-        try {
-            $authUri = "https://graph.microsoft.com/v1.0/users/$([System.Uri]::EscapeDataString($UserPrincipalName))/authentication/methods"
-            $authResponse = Invoke-MgGraphRequest -Method GET -Uri $authUri -ErrorAction Stop
-            if ($authResponse -and $authResponse.value) {
-                $typeMap = @{
-                    'microsoftAuthenticatorAuthenticationMethod'  = 'Microsoft Authenticator'
-                    'passwordAuthenticationMethod'                = 'Password'
-                    'phoneAuthenticationMethod'                   = 'Phone'
-                    'fido2AuthenticationMethod'                   = 'FIDO2 Key'
-                    'emailAuthenticationMethod'                   = 'Email OTP'
-                    'softwareOathAuthenticationMethod'            = 'Software OATH (TOTP)'
-                    'temporaryAccessPassAuthenticationMethod'     = 'Temporary Access Pass'
-                    'windowsHelloForBusinessAuthenticationMethod' = 'Windows Hello for Business'
-                    'hardwareOathAuthenticationMethod'            = 'Hardware OATH'
-                }
-
-                $methodDetails = @()
-                foreach ($method in @($authResponse.value)) {
-                    $odataType = "$($method['@odata.type'])"
-                    $shortType = if ($odataType) { $odataType -replace '#microsoft\.graph\.', '' } else { 'unknown' }
-                    $friendlyType = if ($typeMap.ContainsKey($shortType)) { $typeMap[$shortType] } else { $shortType }
-
-                    $displayName = if ($method['displayName']) {
-                        "$($method['displayName'])"
-                    } else {
-                        'Unnamed method'
+        if (Test-AuthMethodsScopeEnabled) {
+            try {
+                $authUri = "https://graph.microsoft.com/v1.0/users/$([System.Uri]::EscapeDataString($UserPrincipalName))/authentication/methods"
+                $authResponse = Invoke-MgGraphRequest -Method GET -Uri $authUri -ErrorAction Stop
+                if ($authResponse -and $authResponse.value) {
+                    $typeMap = @{
+                        'microsoftAuthenticatorAuthenticationMethod'  = 'Microsoft Authenticator'
+                        'passwordAuthenticationMethod'                = 'Password'
+                        'phoneAuthenticationMethod'                   = 'Phone'
+                        'fido2AuthenticationMethod'                   = 'FIDO2 Key'
+                        'emailAuthenticationMethod'                   = 'Email OTP'
+                        'softwareOathAuthenticationMethod'            = 'Software OATH (TOTP)'
+                        'temporaryAccessPassAuthenticationMethod'     = 'Temporary Access Pass'
+                        'windowsHelloForBusinessAuthenticationMethod' = 'Windows Hello for Business'
+                        'hardwareOathAuthenticationMethod'            = 'Hardware OATH'
                     }
 
-                    $createdRaw = if ($method['createdDateTime']) {
-                        "$($method['createdDateTime'])"
-                    } elseif ($method['creationDateTime']) {
-                        "$($method['creationDateTime'])"
-                    } else {
-                        $null
-                    }
+                    $methodDetails = @()
+                    foreach ($method in @($authResponse.value)) {
+                        $odataType = "$($method['@odata.type'])"
+                        $shortType = if ($odataType) { $odataType -replace '#microsoft\.graph\.', '' } else { 'unknown' }
+                        $friendlyType = if ($typeMap.ContainsKey($shortType)) { $typeMap[$shortType] } else { $shortType }
 
-                    $createdText = 'Unknown'
-                    if (-not [string]::IsNullOrWhiteSpace($createdRaw)) {
-                        $createdParsed = $null
-                        if ([datetime]::TryParse($createdRaw, [ref]$createdParsed)) {
-                            $createdText = $createdParsed.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
+                        $displayName = if ($method['displayName']) {
+                            "$($method['displayName'])"
                         } else {
-                            $createdText = $createdRaw
+                            'Unnamed method'
                         }
+
+                        $createdRaw = if ($method['createdDateTime']) {
+                            "$($method['createdDateTime'])"
+                        } elseif ($method['creationDateTime']) {
+                            "$($method['creationDateTime'])"
+                        } else {
+                            $null
+                        }
+
+                        $createdText = 'Unknown'
+                        if (-not [string]::IsNullOrWhiteSpace($createdRaw)) {
+                            try {
+                                $createdText = (Get-Date -Date $createdRaw -ErrorAction Stop).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
+                            } catch {
+                                $createdText = $createdRaw
+                            }
+                        }
+
+                        $methodDetails += ("Type: {0} | Name: {1} | Created: {2}" -f $friendlyType, $displayName, $createdText)
                     }
 
-                    $methodDetails += ("Type: {0} | Name: {1} | Created: {2}" -f $friendlyType, $displayName, $createdText)
+                    $authMethodsCountText = $methodDetails.Count
+                    $authMethodsText = if ($methodDetails.Count -gt 0) { $methodDetails -join '; ' } else { 'None registered' }
+                } else {
+                    $authMethodsCountText = '0'
+                    $authMethodsText = 'None registered'
                 }
-
-                $authMethodsCountText = $methodDetails.Count
-                $authMethodsText = if ($methodDetails.Count -gt 0) { $methodDetails -join '; ' } else { 'None registered' }
-            } else {
-                $authMethodsCountText = '0'
-                $authMethodsText = 'None registered'
+            } catch {
+                throw "Failed to retrieve authentication methods while tier '$($script:SelectedAuthTierConfig.Name)' requires UserAuthenticationMethod.Read.All. Error: $($_.Exception.Message)"
             }
-        } catch {
-            Write-Warning "Could not retrieve authentication methods (insufficient privileges or error): $_"
+        } else {
+            $authMethodsText = 'Insufficient permissions to retrieve authentication methods'
+            $authMethodsCountText = 'Insufficient permissions to retrieve authentication methods'
         }
         if ($null -eq $identityData) { $identityData = [PSCustomObject]@{} }
         $identityData | Add-Member -NotePropertyName 'AuthenticationMethodsCount' -NotePropertyValue $authMethodsCountText -Force
@@ -1197,9 +1331,27 @@ function GenerateMainReportPage {
     $deviceHitsTotal = if ($DeviceQueryData) { ($DeviceQueryData | Measure-Object -Property ResultCount -Sum).Sum } else { 0 }
     if ($null -eq $deviceHitsTotal) { $deviceHitsTotal = 0 }
 
+    $deviceQueriesWithHits = @()
+    if ($DeviceQueryData) {
+        $deviceQueriesWithHits = @(
+            $DeviceQueryData |
+                Where-Object { [int]$_.ResultCount -gt 0 } |
+                Sort-Object -Property @{ Expression = { [int]$_.ResultCount }; Descending = $true }, @{ Expression = { "$($_.Name)" }; Descending = $false }
+        )
+    }
+
     $userQueryCount = if ($IdentityQueryData) { $IdentityQueryData.Count } else { 0 }
     $userHitsTotal = if ($IdentityQueryData) { ($IdentityQueryData | Measure-Object -Property ResultCount -Sum).Sum } else { 0 }
     if ($null -eq $userHitsTotal) { $userHitsTotal = 0 }
+
+    $userQueriesWithHits = @()
+    if ($IdentityQueryData) {
+        $userQueriesWithHits = @(
+            $IdentityQueryData |
+                Where-Object { [int]$_.ResultCount -gt 0 } |
+                Sort-Object -Property @{ Expression = { [int]$_.ResultCount }; Descending = $true }, @{ Expression = { "$($_.Name)" }; Descending = $false }
+        )
+    }
 
     $allQueryData = @()
     if ($DeviceQueryData) { $allQueryData += $DeviceQueryData }
@@ -1233,14 +1385,37 @@ function GenerateMainReportPage {
         "<span class='card-link disabled'>User report not generated</span>"
     }
 
+    $buildQueryHitListHtml = {
+        param(
+            [object[]]$QueriesWithHits,
+            [string]$NoneText
+        )
+
+        if (-not $QueriesWithHits -or $QueriesWithHits.Count -eq 0) {
+            return "<p class='meta'>Queries with hits: 0</p><p class='meta-muted'>$([System.Web.HttpUtility]::HtmlEncode($NoneText))</p>"
+        }
+
+        $items = ''
+        foreach ($q in $QueriesWithHits) {
+            $name = [System.Web.HttpUtility]::HtmlEncode("$($q.Name)")
+            $count = [int]$q.ResultCount
+            $items += "<li><span class='query-hit-name'>$name</span> <span class='query-hit-count'>($count)</span></li>"
+        }
+
+        return "<p class='meta'>Queries with hits: $($QueriesWithHits.Count)</p><ul class='meta-list'>$items</ul>"
+    }
+
+    $deviceQueryHitListHtml = & $buildQueryHitListHtml -QueriesWithHits $deviceQueriesWithHits -NoneText 'No device queries returned hits.'
+    $userQueryHitListHtml = & $buildQueryHitListHtml -QueriesWithHits $userQueriesWithHits -NoneText 'No user queries returned hits.'
+
     $deviceSummary = if ($devicePageFile) {
-        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($DeviceEntity))</p><p class='meta'>Queries: $deviceQueryCount</p><p class='meta'>Total Hits: $deviceHitsTotal</p>"
+        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($DeviceEntity))</p><p class='meta'>Queries: $deviceQueryCount</p><p class='meta'>Total Hits: $deviceHitsTotal</p>$deviceQueryHitListHtml"
     } else {
         "<p class='meta'>No device input was provided in this run.</p>"
     }
 
     $userSummary = if ($userPageFile) {
-        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($UserEntity))</p><p class='meta'>Queries: $userQueryCount</p><p class='meta'>Total Hits: $userHitsTotal</p>"
+        "<p class='meta'>Entity: $([System.Web.HttpUtility]::HtmlEncode($UserEntity))</p><p class='meta'>Queries: $userQueryCount</p><p class='meta'>Total Hits: $userHitsTotal</p>$userQueryHitListHtml"
     } else {
         "<p class='meta'>No user input was provided in this run.</p>"
     }
@@ -1265,8 +1440,28 @@ function GenerateMainReportPage {
         foreach ($prop in $IdentityInfoData.PSObject.Properties) {
             $field = [System.Web.HttpUtility]::HtmlEncode($prop.Name)
             $rawValue = if ($null -eq $prop.Value) { '' } else { "$($prop.Value)" }
-            $value = [System.Web.HttpUtility]::HtmlEncode($rawValue)
-            $rows += "<tr><td class='field-col'>$field</td><td>$value</td></tr>"
+            if ($prop.Name -eq 'AuthenticationMethods' -and $rawValue -match ' \| ') {
+                $methodEntries = $rawValue -split '; '
+                $methodRowsHtml = ''
+                foreach ($entry in $methodEntries) {
+                    if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+                    $parts = @{}
+                    foreach ($part in ($entry -split ' \| ')) {
+                        if ($part -match '^(.+?):\s*(.*)$') {
+                            $parts[$matches[1].Trim()] = $matches[2].Trim()
+                        }
+                    }
+                    $typeVal    = [System.Web.HttpUtility]::HtmlEncode($parts['Type'])
+                    $nameVal    = [System.Web.HttpUtility]::HtmlEncode($parts['Name'])
+                    $createdVal = [System.Web.HttpUtility]::HtmlEncode($parts['Created'])
+                    $methodRowsHtml += "<tr><td>$typeVal</td><td>$nameVal</td><td>$createdVal</td></tr>"
+                }
+                $value = "<table class='auth-methods-table'><thead><tr><th>Type</th><th>Name</th><th>Created (UTC)</th></tr></thead><tbody>$methodRowsHtml</tbody></table>"
+                $rows += "<tr><td class='field-col'>$field</td><td>$value</td></tr>"
+            } else {
+                $value = [System.Web.HttpUtility]::HtmlEncode($rawValue)
+                $rows += "<tr><td class='field-col'>$field</td><td>$value</td></tr>"
+            }
         }
         $identityInfoHtml = "<article class='card entity-card'><h2>Identity Info</h2><div class='entity-table-wrap'><table class='entity-table'><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>$rows</tbody></table></div></article>"
     }
@@ -1322,7 +1517,7 @@ function GenerateMainReportPage {
             $entityType = $alert.EntityType
             $badgeClass = switch ($entityType) { 'Device' { 'badge-device' } 'User' { 'badge-user' } default { 'badge-both' } }
             $entLabel   = [System.Web.HttpUtility]::HtmlEncode($entityType)
-            $alertRowsHtml += "<tr><td>$ts</td><td><a href='$alertUrl' target='_blank' rel='noopener noreferrer'>$title</a></td><td><span class='$sevClass'>$sevLabel</span></td><td>$category</td><td>$source</td><td><span class='$badgeClass'>$entLabel</span></td></tr>"
+            $alertRowsHtml += "<tr><td>$ts</td><td><a href='$alertUrl' target='_blank' rel='noopener noreferrer'>$title</a></td><td><span class='$sevClass'>$sevLabel</span></td><td>$category</td><td>$source</td><td class='entity-cell'><span class='$badgeClass'>$entLabel</span></td></tr>"
         }
         $alertsHtml = "<article class='card alerts-card'><h2>Alerts <span style='font-size:0.9rem;font-weight:500;color:#6b7280;'>($($uniqueAlerts.Count) in last 30 days)</span></h2><div class='alerts-table-wrap'><table class='alerts-table'><thead><tr><th>Timestamp</th><th>Title</th><th>Severity</th><th>Category</th><th>Service Source</th><th>Entity</th></tr></thead><tbody>$alertRowsHtml</tbody></table></div></article>"
     } else {
@@ -1440,6 +1635,29 @@ function GenerateMainReportPage {
             margin: 4px 0;
             color: #374151;
         }
+        .meta-muted {
+            margin: 6px 0 0 0;
+            color: var(--muted);
+            font-size: 0.88rem;
+        }
+        .meta-list {
+            margin: 8px 0 0 20px;
+            padding: 0;
+            color: #1f2937;
+            font-size: 0.9rem;
+            max-height: 170px;
+            overflow-y: auto;
+        }
+        .meta-list li {
+            margin: 3px 0;
+        }
+        .query-hit-name {
+            font-weight: 600;
+        }
+        .query-hit-count {
+            color: var(--muted);
+            font-weight: 600;
+        }
         .card-link {
             display: inline-block;
             margin-top: 14px;
@@ -1541,6 +1759,10 @@ function GenerateMainReportPage {
             font-weight: 700;
             white-space: nowrap;
         }
+        .auth-methods-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        .auth-methods-table th,
+        .auth-methods-table td { padding: 5px 8px; border: 1px solid var(--stroke); text-align: left; vertical-align: top; word-break: break-word; }
+        .auth-methods-table thead th { background: #f3f4f6; font-weight: 700; }
         @media (max-width: 900px) {
             .overview-grid {
                 grid-template-columns: 1fr;
@@ -1554,14 +1776,15 @@ function GenerateMainReportPage {
             .alerts-table tbody td { padding: 9px 12px; border-bottom: 1px solid var(--stroke); vertical-align: top; word-break: break-word; }
             .alerts-table tbody tr:last-child td { border-bottom: none; }
             .alerts-table tbody tr:hover { background: #f9fafb; }
+            .alerts-table td.entity-cell { white-space: nowrap; word-break: normal; width: 1%; }
             .sev-pill { border-radius: 999px; padding: 2px 9px; font-weight: 700; font-size: 0.8rem; white-space: nowrap; display: inline-block; }
             .sev-high   { background: #dc2626; color: #fff; }
             .sev-medium { background: #ea580c; color: #fff; }
             .sev-low    { background: #fde68a; color: #1f2937; }
             .sev-info   { background: #2563eb; color: #fff; }
-            .badge-device { background: #0f6cbd; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
-            .badge-user   { background: #7c3aed; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
-            .badge-both   { background: #0f766e; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; }
+            .badge-device { background: #0f6cbd; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; white-space: nowrap; }
+            .badge-user   { background: #7c3aed; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; white-space: nowrap; }
+            .badge-both   { background: #0f766e; color: #fff; border-radius: 999px; padding: 2px 8px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; white-space: nowrap; }
             .no-alerts { color: var(--muted); font-size: 0.95rem; padding: 8px 0; }
         .header-brand {
             display: flex;
@@ -1601,6 +1824,7 @@ function GenerateMainReportPage {
             html:not([data-theme='light']) .alerts-table thead th { background: #252a3a; }
             html:not([data-theme='light']) .alerts-table tbody tr:hover { background: #252a3a; }
             html:not([data-theme='light']) .entity-table thead th { background: #252a3a; }
+            html:not([data-theme='light']) .auth-methods-table thead th { background: #252a3a; }
             html:not([data-theme='light']) .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
         }
         /* Manual dark override */
@@ -1621,6 +1845,7 @@ function GenerateMainReportPage {
         html[data-theme='dark'] .alerts-table thead th { background: #252a3a; }
         html[data-theme='dark'] .alerts-table tbody tr:hover { background: #252a3a; }
         html[data-theme='dark'] .entity-table thead th { background: #252a3a; }
+        html[data-theme='dark'] .auth-methods-table thead th { background: #252a3a; }
         html[data-theme='dark'] .footer { background: #1a2030; border-top-color: #3a4055; color: #8d99ae; }
         /* Scrollbars */
         ::-webkit-scrollbar { width: 7px; height: 7px; }
@@ -1752,6 +1977,14 @@ $deviceQueryResults = $null
 $identityQueryResults = $null
 
 if (-not (Ensure-GraphSecurityModule)) {
+    exit 1
+}
+
+try {
+    $script:SelectedAuthTierConfig = Get-AuthenticationTierConfig -ConfigPath $AuthTierConfigPath -TierName $AuthenticationTier
+    Write-Host "Authentication tier '$AuthenticationTier' loaded from '$AuthTierConfigPath'." -ForegroundColor Cyan
+} catch {
+    Write-Host "Failed to load authentication tier configuration: $_" -ForegroundColor Red
     exit 1
 }
 

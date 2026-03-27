@@ -57,7 +57,7 @@
         "Name":  "Cloud persitence events",
         "Query":  "let Upn = \u0027{UserPrincipalName}\u0027;\r\nlet TimeFrame = {TimeFrame};\r\n// Define PersistenceEvents, list can be appended with other events or your choosing\r\nlet PersistenceEvents = dynamic([\u0027add member\u0027, \u0027add device\u0027, \u0027register device\u0027, \u0027add service principal\u0027, \u0027update service principal\u0027, \u0027add user\u0027, \u0027enable account\u0027, \u0027add group\u0027, \u0027Invite external user\u0027, \u0027Add application\u0027, \u0027add app\u0027, \u0027User registered security info\u0027]);\r\nAuditLogs\r\n// Filter only on the RiskyUsers defined\r\n| where TimeGenerated \u003e ago(TimeFrame)\r\n| where InitiatedBy has Upn\r\n// Filter on DiscoveryEvents\r\n| where OperationName has_any (PersistenceEvents)\r\n| project TimeGenerated, Identity, OperationName, Category, ResultDescription, Result",
         "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Azure%20Active%20Directory/CloudPersistenceActivityByUserAtRisk.md",
-        "ResultCount":  0
+        "ResultCount":  2
     },
     {
         "Name":  "Successful device code sign-ins",
@@ -132,4 +132,3 @@
         "ResultCount":  0
     }
 ]
-

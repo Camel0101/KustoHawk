@@ -27,7 +27,7 @@
         "Name":  "Active CISA known exploited vulnerabilities",
         "Query":  "let Device = \u0027{DeviceId}\u0027;\r\nlet KnowExploitesVulnsCISA = externaldata(cveID: string, vendorProject: string, product: string, vulnerabilityName: string, dateAdded: datetime, shortDescription: string, requiredAction: string, dueDate: datetime, notes: string)[\u0027https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv\u0027] with (format=\u0027csv\u0027, ignoreFirstRecord=True);\r\nDeviceTvmSoftwareVulnerabilities\r\n| where DeviceId =~ Device\r\n| project CveId\r\n| join kind=inner (KnowExploitesVulnsCISA | project cveID, vendorProject, product, vulnerabilityName, dateAdded) on $left.CveId == $right.cveID\r\n| project cveID, vendorProject, product, vulnerabilityName, dateAdded",
         "Source":  "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Vulnerability%20Management/CISAKnowExploitsVulnerabilitiesTotalVulnerableDevices.md",
-        "ResultCount":  0
+        "ResultCount":  12
     },
     {
         "Name":  "Suspicious RunMRU registry key entries",
@@ -180,4 +180,3 @@
         "ResultCount":  0
     }
 ]
-
