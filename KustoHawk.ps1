@@ -293,6 +293,76 @@ function Connect-GraphAPI {
     }
 }
 
+function Resolve-EffectiveTier {
+    param (
+        [string]$RequestedTier
+    )
+
+    $ctx = Get-MgContext
+    if (-not $ctx) {
+        Write-Host "No active Microsoft Graph session found after authentication." -ForegroundColor Red
+        return $null
+    }
+
+    # Normalise granted scopes to lowercase for comparison
+    $grantedScopes = @($ctx.Scopes | Where-Object { $_ } | ForEach-Object { $_.ToLower().Trim() })
+
+    # Build fallback list from requested tier down to Tier1
+    $allTiers = @('Tier3', 'Tier2', 'Tier1')
+    $startIndex = [array]::IndexOf($allTiers, $RequestedTier)
+    if ($startIndex -lt 0) { $startIndex = $allTiers.Count - 1 }
+    $tiersToTry = $allTiers[$startIndex..($allTiers.Count - 1)]
+
+    # --- Path 1: individual scopes are available (User auth) ---
+    # When scopes contain at least one specific Graph permission we can verify directly.
+    $hasIndividualScopes = ($grantedScopes | Where-Object { $_ -match '\.' -and $_ -notlike '*graph.microsoft.com*' }).Count -gt 0
+
+    if ($hasIndividualScopes) {
+        foreach ($tier in $tiersToTry) {
+            try {
+                $tierConfig = Get-AuthenticationTierConfig -ConfigPath $AuthTierConfigPath -TierName $tier
+            } catch {
+                continue
+            }
+
+            $required = @($tierConfig.Permissions | ForEach-Object { $_.ToLower() })
+            $missing  = @($required | Where-Object { $grantedScopes -notcontains $_ })
+
+            if ($missing.Count -eq 0) {
+                if ($tier -ne $RequestedTier) {
+                    Write-Host "Requested tier '$RequestedTier' could not be satisfied. Falling back to tier '$tier'." -ForegroundColor Yellow
+                } else {
+                    Write-Host "Permission check passed for tier '$tier'." -ForegroundColor Green
+                }
+                return $tierConfig
+            } else {
+                Write-Host "Tier '$tier' requires permissions not granted: $($missing -join ', ')." -ForegroundColor Yellow
+                if ($tiersToTry.Count -gt 1 -and $tier -eq $RequestedTier) {
+                    Write-Host "Attempting fallback to a lower tier..." -ForegroundColor Yellow
+                }
+            }
+        }
+
+        # All tiers exhausted with individual scopes — definitive failure
+        Write-Host "No usable tier found. At minimum 'ThreatHunting.Read.All' (Tier1) must be granted." -ForegroundColor Red
+        Write-Host "Granted scopes: $($grantedScopes -join ', ')" -ForegroundColor Red
+        return $null
+    }
+
+    # --- Path 2: scopes not individually listed (typical for Service Principal auth) ---
+    # Probe the API directly to confirm ThreatHunting.Read.All is accessible.
+    Write-Host "Individual scopes not enumerable (Service Principal auth). Probing API access for minimum Tier1 permissions..." -ForegroundColor Yellow
+    try {
+        Start-MgSecurityHuntingQuery -BodyParameter @{ Query = 'DeviceInfo | take 1'; Timespan = 'P1D' } -ErrorAction Stop | Out-Null
+        Write-Host "API probe succeeded. Proceeding with tier '$RequestedTier'." -ForegroundColor Green
+        return Get-AuthenticationTierConfig -ConfigPath $AuthTierConfigPath -TierName $RequestedTier
+    } catch {
+        Write-Host "API probe failed: ThreatHunting.Read.All (Tier1 minimum) is not accessible." -ForegroundColor Red
+        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
 function ValidateInputParameters {
     $DeviceIdPattern = '^[a-fA-F0-9]{40}$'
     if ($DeviceId) {
@@ -843,7 +913,7 @@ function GenerateQueryReport {
             border-collapse: separate;
             border-spacing: 0;
             background: var(--neutral-bg-1);
-            table-layout: auto;
+            table-layout: fixed;
         }
         .report-table thead th {
             background: var(--neutral-bg-3);
@@ -953,9 +1023,12 @@ function GenerateQueryReport {
         .sample-row td {
             background: var(--neutral-bg-2);
             border-bottom: 1px solid var(--neutral-stroke-1);
+            overflow: hidden;
         }
         .sample-details {
             margin-top: 2px;
+            width: 100%;
+            max-width: 100%;
         }
         .sample-details summary {
             cursor: pointer;
@@ -964,17 +1037,21 @@ function GenerateQueryReport {
             padding: 4px 0;
         }
         .sample-table-wrap {
+            display: block;
+            width: 100%;
             margin-top: 8px;
-            overflow: auto;
+            overflow-x: auto;
+            overflow-y: hidden;
+            max-width: 100%;
             border: 1px solid var(--neutral-stroke-2);
             border-radius: 6px;
             background: #fff;
         }
         .sample-table {
-            width: 100%;
+            width: max-content;
+            min-width: 100%;
             border-collapse: collapse;
             font-size: 0.85rem;
-            min-width: 600px;
         }
         .sample-table th,
         .sample-table td {
@@ -987,6 +1064,7 @@ function GenerateQueryReport {
         .sample-table thead th {
             background: #f3f4f6;
             font-weight: 700;
+            white-space: nowrap;
         }
         .sample-caption {
             margin-top: 8px;
@@ -1990,6 +2068,19 @@ try {
 
 $info = ValidateInputParameters
 Connect-GraphAPI
+
+Write-Host "Verifying granted permissions against tier '$AuthenticationTier'..." -ForegroundColor Cyan
+$effectiveTierConfig = Resolve-EffectiveTier -RequestedTier $AuthenticationTier
+if (-not $effectiveTierConfig) {
+    Write-Host "Script cannot start: the connected account does not have sufficient permissions to run KustoHawk." -ForegroundColor Red
+    Write-Host "Ensure at minimum 'ThreatHunting.Read.All' is granted and re-run the script." -ForegroundColor Red
+    exit 1
+}
+$script:SelectedAuthTierConfig = $effectiveTierConfig
+if ($effectiveTierConfig.Name -ne $AuthenticationTier) {
+    Write-Host "Running with effective tier '$($effectiveTierConfig.Name)' (downgraded from '$AuthenticationTier')." -ForegroundColor Yellow
+}
+
 $entityInfo = GetEntityInfo $info.DeviceId $info.UserPrincipalName
 if ($DeviceId){
     $json = Get-Content -Raw -Path '.\Resources\DeviceQueries.json' | ConvertFrom-Json
