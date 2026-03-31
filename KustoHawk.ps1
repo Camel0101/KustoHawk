@@ -77,8 +77,17 @@ param (
         [Parameter(Mandatory = $true)][ValidateSet("User", "ServicePrincipalSecret", "ServicePrincipalCertificate")][string]$AuthenticationMethod
     )
 
+# Set Service Principal Variables
+$AppID = "<AppID>"
+$TenantID = "<TentantID>"
+$Secret = "<Secret>" #Certificate Authentication is recommended.
+$DefaultCertificateThumbprint = "" # The certificate must exist in Cert:\CurrentUser\My or Cert:\LocalMachine\My
+$SecureClientSecret = ConvertTo-SecureString -String $Secret -AsPlainText -Force
+$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppID, $SecureClientSecret
+$AuthTierConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'Resources\AuthenticationTiers.yaml'
+$script:SelectedAuthTierConfig = $null
 
-function Ensure-GraphSecurityModule {
+function Check-InstalledGraphModules {
     $moduleName = 'Microsoft.Graph.Security'
 
     if (Get-Module -ListAvailable -Name $moduleName) {
@@ -100,17 +109,7 @@ function Ensure-GraphSecurityModule {
     }
 }
 
-# Set Service Principal Variables
-$AppID = "<AppID>"
-$TenantID = "<TentantID>"
-$Secret = "<Secret>" #Certificate Authentication is recommended.
-$DefaultCertificateThumbprint = ""
-$SecureClientSecret = ConvertTo-SecureString -String $Secret -AsPlainText -Force
-$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppID, $SecureClientSecret
-$AuthTierConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'Resources\AuthenticationTiers.yaml'
-$script:SelectedAuthTierConfig = $null
-
-function ConvertFrom-SimpleTierYaml {
+function Get-TierRoles {
     param (
         [string[]]$Lines
     )
@@ -171,7 +170,7 @@ function Get-AuthenticationTierConfig {
     if (Get-Command -Name ConvertFrom-Yaml -ErrorAction SilentlyContinue) {
         $parsed = $yamlText | ConvertFrom-Yaml
     } else {
-        $parsed = ConvertFrom-SimpleTierYaml -Lines (Get-Content -Path $ConfigPath)
+        $parsed = Get-TierRoles -Lines (Get-Content -Path $ConfigPath)
     }
 
     if (-not $parsed -or -not $parsed.tiers) {
@@ -229,7 +228,7 @@ function Connect-GraphAPI-ServicePrincipalSecret {
         Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
         Write-Host "Required permissions: $($requiredPermissions -join ', ')" -ForegroundColor DarkCyan
     }
-    Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $ClientSecretCredential
+    Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $ClientSecretCredential -NoWelcome
 }
 
 function Connect-GraphAPI-ServicePrincipalCertificate {
@@ -304,7 +303,7 @@ function Resolve-EffectiveTier {
         return $null
     }
 
-    # Normalise granted scopes to lowercase for comparison
+    # Normalise granted scopes 
     $grantedScopes = @($ctx.Scopes | Where-Object { $_ } | ForEach-Object { $_.ToLower().Trim() })
 
     # Build fallback list from requested tier down to Tier1
@@ -313,8 +312,6 @@ function Resolve-EffectiveTier {
     if ($startIndex -lt 0) { $startIndex = $allTiers.Count - 1 }
     $tiersToTry = $allTiers[$startIndex..($allTiers.Count - 1)]
 
-    # --- Path 1: individual scopes are available (User auth) ---
-    # When scopes contain at least one specific Graph permission we can verify directly.
     $hasIndividualScopes = ($grantedScopes | Where-Object { $_ -match '\.' -and $_ -notlike '*graph.microsoft.com*' }).Count -gt 0
 
     if ($hasIndividualScopes) {
@@ -343,14 +340,11 @@ function Resolve-EffectiveTier {
             }
         }
 
-        # All tiers exhausted with individual scopes — definitive failure
         Write-Host "No usable tier found. At minimum 'ThreatHunting.Read.All' (Tier1) must be granted." -ForegroundColor Red
         Write-Host "Granted scopes: $($grantedScopes -join ', ')" -ForegroundColor Red
         return $null
     }
 
-    # --- Path 2: scopes not individually listed (typical for Service Principal auth) ---
-    # Probe the API directly to confirm ThreatHunting.Read.All is accessible.
     Write-Host "Individual scopes not enumerable (Service Principal auth). Probing API access for minimum Tier1 permissions..." -ForegroundColor Yellow
     try {
         Start-MgSecurityHuntingQuery -BodyParameter @{ Query = 'DeviceInfo | take 1'; Timespan = 'P1D' } -ErrorAction Stop | Out-Null
@@ -558,7 +552,7 @@ function Write-ConsoleDetailsTable {
     Write-Host $border -ForegroundColor $Color
 }
 
-function GetEntityInfo {
+function Get-EntityInfo {
     param (
         [string]$DeviceId,
         [string]$UserPrincipalName
@@ -1994,6 +1988,9 @@ function GenerateMainReportPage {
             html:not([data-theme='light']) .page-header { background: rgba(20, 24, 36, 0.95); }
             html:not([data-theme='light']) .nav-link { background: var(--surface); }
             html:not([data-theme='light']) .meta { color: #cbd5e1; }
+            html:not([data-theme='light']) .meta-list { color: #e5e7eb; }
+            html:not([data-theme='light']) .query-hit-name { color: #f3f4f6; }
+            html:not([data-theme='light']) .query-hit-count { color: #93c5fd; }
             html:not([data-theme='light']) .pie-center { background: var(--surface); color: var(--text); }
             html:not([data-theme='light']) .pie-chart { box-shadow: inset 0 0 0 1px var(--stroke); }
             html:not([data-theme='light']) .alerts-table thead th { background: #252a3a; }
@@ -2015,6 +2012,9 @@ function GenerateMainReportPage {
         html[data-theme='dark'] .page-header { background: rgba(20, 24, 36, 0.95); }
         html[data-theme='dark'] .nav-link { background: var(--surface); }
         html[data-theme='dark'] .meta { color: #cbd5e1; }
+        html[data-theme='dark'] .meta-list { color: #e5e7eb; }
+        html[data-theme='dark'] .query-hit-name { color: #f3f4f6; }
+        html[data-theme='dark'] .query-hit-count { color: #93c5fd; }
         html[data-theme='dark'] .pie-center { background: var(--surface); color: var(--text); }
         html[data-theme='dark'] .pie-chart { box-shadow: inset 0 0 0 1px var(--stroke); }
         html[data-theme='dark'] .alerts-table thead th { background: #252a3a; }
@@ -2151,7 +2151,7 @@ if ($VerboseOutput) {
 $deviceQueryResults = $null
 $identityQueryResults = $null
 
-if (-not (Ensure-GraphSecurityModule)) {
+if (-not (Check-InstalledGraphModules)) {
     exit 1
 }
 
@@ -2169,7 +2169,7 @@ Connect-GraphAPI
 Write-Host "Verifying granted permissions against tier '$AuthenticationTier'..." -ForegroundColor Cyan
 $effectiveTierConfig = Resolve-EffectiveTier -RequestedTier $AuthenticationTier
 if (-not $effectiveTierConfig) {
-    Write-Host "Script cannot start: the connected account does not have sufficient permissions to run KustoHawk." -ForegroundColor Red
+    Write-Host "Script cannot start: the connected account or Service Principal does not have sufficient permissions to run KustoHawk." -ForegroundColor Red
     Write-Host "Ensure at minimum 'ThreatHunting.Read.All' is granted and re-run the script." -ForegroundColor Red
     exit 1
 }
@@ -2178,7 +2178,7 @@ if ($effectiveTierConfig.Name -ne $AuthenticationTier) {
     Write-Host "Running with effective tier '$($effectiveTierConfig.Name)' (downgraded from '$AuthenticationTier')." -ForegroundColor Yellow
 }
 
-$entityInfo = GetEntityInfo $info.DeviceId $info.UserPrincipalName
+$entityInfo = Get-EntityInfo $info.DeviceId $info.UserPrincipalName
 if ($DeviceId){
     $json = Get-Content -Raw -Path '.\Resources\DeviceQueries.json' | ConvertFrom-Json
     $count = $json.Count
