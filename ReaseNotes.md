@@ -1,4 +1,0 @@
-- Certificate based Sign-Ins
-- Update queries
-- main page
-- overview alerts

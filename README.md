@@ -1,6 +1,6 @@
 # KustoHawk 🦅
 
-KustoHawk is an incident triage and response tool for Microsoft Defender XDR and Microsoft Sentinel environments. The script collects common indicators of compromise and returns a complete picture of the activities performed by an device of account. The tool leverages Graph API to run the hunting queries across your unified XDR environment. The queries that are executed are listed in the [Resources](./Resources/) folder. The script only outputs hits, but with verbose (-v) or export (-e) mode enabled the results are shown on the terminal or exported to CSV files for further investigation.
+KustoHawk is an incident triage and response tool for Microsoft Defender XDR and Microsoft Sentinel environments. The script collects common indicators of compromise and returns a complete picture of the activities performed by an device of account. The tool leverages Graph API to run the hunting queries across your unified XDR environment. Bases on a [tiering permission](#authentication-tiers-and-permissions) model additional data can be collected via Graph API calls. The queries that are executed are listed in the [Resources](./Resources/) folder.
 
 ![Alt text](./Images/Logo-NoBackground.png)
 
