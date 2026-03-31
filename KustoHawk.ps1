@@ -443,6 +443,121 @@ function RunKQLQuery {
 
 }
 
+function ConvertTo-WrappedConsoleLines {
+    param (
+        [string]$Text,
+        [int]$Width
+    )
+
+    if ($Width -lt 1) {
+        return @('')
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return @('')
+    }
+
+    $lines = @()
+    $sourceLines = "$Text" -split "`r?`n"
+
+    foreach ($sourceLine in $sourceLines) {
+        if ([string]::IsNullOrEmpty($sourceLine)) {
+            $lines += ''
+            continue
+        }
+
+        $remaining = $sourceLine
+        while ($remaining.Length -gt $Width) {
+            $breakIndex = $remaining.LastIndexOf(' ', $Width - 1)
+            if ($breakIndex -lt 1) {
+                $breakIndex = $Width
+            }
+
+            $lines += $remaining.Substring(0, $breakIndex).TrimEnd()
+            $remaining = $remaining.Substring($breakIndex).TrimStart()
+        }
+
+        $lines += $remaining
+    }
+
+    return $lines
+}
+
+function Write-ConsoleDetailsTable {
+    param (
+        [string]$Title,
+        [PSObject]$Data,
+        [int]$DetailWidth,
+        [int]$ValueWidth,
+        [ConsoleColor]$Color = [ConsoleColor]::Cyan
+    )
+
+    if (-not $Data) {
+        return
+    }
+
+    $properties = @($Data.PSObject.Properties)
+
+    if (-not $PSBoundParameters.ContainsKey('DetailWidth')) {
+        $maxDetailLength = ('Details').Length
+        foreach ($prop in $properties) {
+            $nameLength = "$($prop.Name)".Length
+            if ($nameLength -gt $maxDetailLength) {
+                $maxDetailLength = $nameLength
+            }
+        }
+        $DetailWidth = [Math]::Max(12, $maxDetailLength)
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('ValueWidth')) {
+        $maxValueLength = ('Values').Length
+        foreach ($prop in $properties) {
+            $rawValue = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
+            foreach ($line in ($rawValue -split "`r?`n")) {
+                if ($line.Length -gt $maxValueLength) {
+                    $maxValueLength = $line.Length
+                }
+            }
+        }
+
+        $consoleWidth = 120
+        try {
+            if ($Host -and $Host.UI -and $Host.UI.RawUI -and $Host.UI.RawUI.WindowSize.Width -gt 0) {
+                $consoleWidth = $Host.UI.RawUI.WindowSize.Width
+            }
+        } catch {
+            $consoleWidth = 120
+        }
+
+        # Account for separators and cell padding: "| " + Detail + " | " + Value + " |"
+        $maxAvailableValueWidth = [Math]::Max(20, $consoleWidth - ($DetailWidth + 7))
+        $ValueWidth = [Math]::Max(20, [Math]::Min($maxValueLength, $maxAvailableValueWidth))
+    }
+
+    $border = "+" + ("-" * ($DetailWidth + 2)) + "+" + ("-" * ($ValueWidth + 2)) + "+"
+    $header = "| " + 'Details'.PadRight($DetailWidth) + " | " + 'Values'.PadRight($ValueWidth) + " |"
+
+    Write-Host $Title -ForegroundColor $Color
+    Write-Host $border -ForegroundColor $Color
+    Write-Host $header -ForegroundColor $Color
+    Write-Host $border -ForegroundColor $Color
+
+    foreach ($prop in $properties) {
+        $valueText = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
+        $valueLines = ConvertTo-WrappedConsoleLines -Text $valueText -Width $ValueWidth
+
+        $isFirstLine = $true
+        foreach ($line in $valueLines) {
+            $detailsText = if ($isFirstLine) { "$($prop.Name)" } else { '' }
+            $row = "| " + $detailsText.PadRight($DetailWidth) + " | " + $line.PadRight($ValueWidth) + " |"
+            Write-Host $row -ForegroundColor $Color
+            $isFirstLine = $false
+        }
+    }
+
+    Write-Host $border -ForegroundColor $Color
+}
+
 function GetEntityInfo {
     param (
         [string]$DeviceId,
@@ -489,18 +604,7 @@ function GetEntityInfo {
         }
 
         if ($deviceData) {
-            Write-Host "Host information for $DeviceId" -ForegroundColor Cyan
-            $border = "+-------------------+------------------------------------------------------------------------------------+"
-            $header = "| Details           | Values                                                                             |"
-            Write-Host $border -ForegroundColor Cyan
-            Write-Host $header -ForegroundColor Cyan
-            Write-Host $border -ForegroundColor Cyan
-            foreach ($prop in $deviceData.PSObject.Properties) {
-                $valueText = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
-                $row = "| " + $prop.Name.PadRight(18) + "| " + $valueText.PadRight(83) + "|"
-                Write-Host $row -ForegroundColor Cyan
-            }
-            Write-Host $border -ForegroundColor Cyan
+            Write-ConsoleDetailsTable -Title "Host information for $DeviceId" -Data $deviceData
         }
     }
 
@@ -594,18 +698,7 @@ function GetEntityInfo {
         $identityData | Add-Member -NotePropertyName 'AuthenticationMethods' -NotePropertyValue $authMethodsText -Force
 
         if ($identityData) {
-            Write-Host "Identity information for $UserPrincipalName" -ForegroundColor Cyan
-            $border = "+-------------------+------------------------------------------------------------------------------------+"
-            $header = "| Details           | Values                                                                             |"
-            Write-Host $border -ForegroundColor Cyan
-            Write-Host $header -ForegroundColor Cyan
-            Write-Host $border -ForegroundColor Cyan
-            foreach ($prop in $identityData.PSObject.Properties) {
-                $valueText = if ([string]::IsNullOrWhiteSpace("$($prop.Value)")) { '' } else { "$($prop.Value)" }
-                $row = "| " + $prop.Name.PadRight(18) + "| " + $valueText.PadRight(83) + "|"
-                Write-Host $row -ForegroundColor Cyan
-            }
-            Write-Host $border -ForegroundColor Cyan
+            Write-ConsoleDetailsTable -Title "Identity information for $UserPrincipalName" -Data $identityData
         }
     }
 
@@ -913,7 +1006,7 @@ function GenerateQueryReport {
             border-collapse: separate;
             border-spacing: 0;
             background: var(--neutral-bg-1);
-            table-layout: fixed;
+            table-layout: auto;
         }
         .report-table thead th {
             background: var(--neutral-bg-3);
@@ -934,9 +1027,9 @@ function GenerateQueryReport {
             background: var(--neutral-bg-2);
         }
         .col-name { width: 20%; min-width: 180px; }
-        .col-query { width: 58%; min-width: 380px; }
-        .col-hits { width: 1%; min-width: 90px; text-align: center; white-space: nowrap; }
-        .col-source { width: 21%; min-width: 170px; }
+        .col-query { width: auto; min-width: 380px; }
+        .col-hits { width: 110px; min-width: 110px; text-align: center; white-space: nowrap; }
+        .col-source { width: 160px; min-width: 160px; }
         .sort-button {
             border: none;
             background: transparent;
@@ -1006,6 +1099,10 @@ function GenerateQueryReport {
         }
         .cell-hits {
             text-align: center;
+            white-space: nowrap;
+        }
+        .cell-source {
+            white-space: nowrap;
         }
         .hits-pill {
             display: inline-block;
