@@ -2,6 +2,10 @@
 
 KustoHawk is an incident triage and response tool for Microsoft Defender XDR and Microsoft Sentinel environments. The script collects common indicators of compromise and returns a complete picture of the activities performed by an device of account. The tool leverages Graph API to run the hunting queries across your unified XDR environment. Bases on a [tiering permission](#authentication-tiers-and-permissions) model additional data can be collected via Graph API calls. The queries that are executed are listed in the [Resources](./Resources/) folder.
 
+For a complete project guide covering architecture, execution flow, configuration, command examples, and contribution guidance, see [docs/project-guide.md](./docs/project-guide.md).
+For a dedicated MSSP multi-tenant setup guide, see [docs/mssp-multitenant-setup.md](./docs/mssp-multitenant-setup.md).
+For a client-facing consent and prerequisites FAQ, see [docs/customer-consent-faq.md](./docs/customer-consent-faq.md).
+
 ![Alt text](./Images/Logo-NoBackground.png)
 
 ## Architecture

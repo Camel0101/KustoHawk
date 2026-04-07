@@ -23,8 +23,26 @@
 
 .PARAMETER CertificateThumbprint
     Optional certificate thumbprint used when -AuthenticationMethod ServicePrincipalCertificate is selected.
-    If not specified, the script uses $DefaultCertificateThumbprint from the service principal variables section.
+    If not specified, the script uses the configured default certificate thumbprint.
     The certificate must exist in Cert:\CurrentUser\My or Cert:\LocalMachine\My.
+
+.PARAMETER ConfigPath
+    Optional path to a JSON configuration file that stores MSSP application settings and a tenant registry.
+
+.PARAMETER CustomerName
+    Optional customer name used to resolve the target tenant from the configuration file.
+
+.PARAMETER CustomerTenantId
+    Optional target tenant ID. Recommended for MSSP multi-tenant usage with service principal authentication.
+
+.PARAMETER AppClientId
+    Optional Microsoft Entra application (client) ID. Overrides the value from the configuration file or legacy placeholders.
+
+.PARAMETER AppSecret
+    Optional service principal secret. Overrides the value from the configuration file or legacy placeholders.
+
+.PARAMETER ReportRootPath
+    Optional root output directory. KustoHawk creates a timestamped report folder under this path for the current run.
 
 .PARAMETER VerboseOutput
     [Switch] Enables verbose output to the terminal for detailed results.
@@ -59,7 +77,7 @@
 
 .NOTES
     - Either -DeviceId or -UserPrincipalName (or both) must be provided.
-    - For Service Principal authentication, configure $AppID, $TenantID, and $Secret at the top of the script.
+    - For Service Principal authentication, prefer using -ConfigPath with externalized application and tenant settings.
     - KQL queries are loaded from Resources Folder
     - Results are output as tables, CSV, and HTML reports in the current directory.
     - Requires Microsoft.Graph.Security PowerShell module.
@@ -73,19 +91,267 @@ param (
         [Parameter(Mandatory = $false)][Alias('s')][switch]$IncludeSampleSet,
         [Parameter(Mandatory = $false)][Alias('t')][string]$TimeFrame = "7d",
         [Parameter(Mandatory = $false)][string]$CertificateThumbprint,
+        [Parameter(Mandatory = $false)][string]$ConfigPath,
+        [Parameter(Mandatory = $false)][string]$CustomerName,
+        [Parameter(Mandatory = $false)][string]$CustomerTenantId,
+        [Parameter(Mandatory = $false)][string]$AppClientId,
+        [Parameter(Mandatory = $false)][string]$AppSecret,
+        [Parameter(Mandatory = $false)][string]$ReportRootPath,
         [Parameter(Mandatory = $false)][ValidateSet("Tier1", "Tier2", "Tier3")][string]$AuthenticationTier = "Tier1",
         [Parameter(Mandatory = $true)][ValidateSet("User", "ServicePrincipalSecret", "ServicePrincipalCertificate")][string]$AuthenticationMethod
     )
 
-# Set Service Principal Variables
-$AppID = "<AppID>"
-$TenantID = "<TentantID>"
-$Secret = "<Secret>" #Certificate Authentication is recommended.
-$DefaultCertificateThumbprint = "" # The certificate must exist in Cert:\CurrentUser\My or Cert:\LocalMachine\My
-$SecureClientSecret = ConvertTo-SecureString -String $Secret -AsPlainText -Force
-$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppID, $SecureClientSecret
+# Legacy fallback variables. Prefer -ConfigPath for MSSP usage.
+$LegacyAppID = "<AppID>"
+$LegacyTenantID = "<TentantID>"
+$LegacySecret = "<Secret>" # Certificate authentication is recommended.
+$LegacyDefaultCertificateThumbprint = "" # The certificate must exist in Cert:\CurrentUser\My or Cert:\LocalMachine\My
 $AuthTierConfigPath = Join-Path -Path $PSScriptRoot -ChildPath 'Resources\AuthenticationTiers.yaml'
 $script:SelectedAuthTierConfig = $null
+$script:Config = $null
+$script:ActiveCustomer = $null
+$script:ConnectionSettings = [PSCustomObject]@{
+    AppClientId                  = $null
+    TenantId                     = $null
+    AppSecret                    = $null
+    DefaultCertificateThumbprint = $null
+}
+$script:RunOutputDir = $null
+$script:CurrentRunLabel = $null
+
+function Get-SafePathSegment {
+    param (
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return "default"
+    }
+
+    $segment = $Value -replace '[\\/:*?"<>|]', '-'
+    $segment = $segment.Trim()
+    if ([string]::IsNullOrWhiteSpace($segment)) {
+        return "default"
+    }
+
+    return $segment
+}
+
+function Get-ResolvedPathOrNull {
+    param (
+        [string]$PathValue
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return $null
+    }
+
+    try {
+        return (Resolve-Path -Path $PathValue -ErrorAction Stop).Path
+    } catch {
+        return $null
+    }
+}
+
+function Get-KustoHawkConfig {
+    param (
+        [string]$ConfigFilePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ConfigFilePath)) {
+        return $null
+    }
+
+    $resolvedPath = Get-ResolvedPathOrNull -PathValue $ConfigFilePath
+    if (-not $resolvedPath) {
+        throw "Configuration file '$ConfigFilePath' was not found."
+    }
+
+    $rawJson = Get-Content -Raw -Path $resolvedPath
+    if ([string]::IsNullOrWhiteSpace($rawJson)) {
+        throw "Configuration file '$resolvedPath' is empty."
+    }
+
+    $config = $rawJson | ConvertFrom-Json
+    $config | Add-Member -NotePropertyName '__Path' -NotePropertyValue $resolvedPath -Force
+    return $config
+}
+
+function Resolve-CustomerConfig {
+    param (
+        [PSObject]$ConfigObject,
+        [string]$ResolvedCustomerName,
+        [string]$ResolvedCustomerTenantId
+    )
+
+    if (-not $ConfigObject -or -not $ConfigObject.customers) {
+        return $null
+    }
+
+    $matches = @($ConfigObject.customers | Where-Object {
+        $nameMatch = $false
+        $tenantMatch = $false
+
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedCustomerName) -and $_.name) {
+            $nameMatch = $_.name -eq $ResolvedCustomerName
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedCustomerTenantId) -and $_.tenantId) {
+            $tenantMatch = $_.tenantId -eq $ResolvedCustomerTenantId
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($ResolvedCustomerName) -and -not [string]::IsNullOrWhiteSpace($ResolvedCustomerTenantId)) {
+            return $nameMatch -and $tenantMatch
+        }
+
+        return $nameMatch -or $tenantMatch
+    })
+
+    if ($matches.Count -gt 1) {
+        throw "Multiple customer entries matched the supplied customer selector. Use a unique CustomerName or CustomerTenantId."
+    }
+
+    if ($matches.Count -eq 1) {
+        return $matches[0]
+    }
+
+    return $null
+}
+
+function Initialize-ExecutionContext {
+    $config = $null
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $config = Get-KustoHawkConfig -ConfigFilePath $ConfigPath
+        $script:Config = $config
+        Write-Host "Loaded configuration from '$($config.__Path)'." -ForegroundColor Cyan
+    }
+
+    $customer = Resolve-CustomerConfig -ConfigObject $config -ResolvedCustomerName $CustomerName -ResolvedCustomerTenantId $CustomerTenantId
+    if (($CustomerName -or $CustomerTenantId) -and -not $customer -and $config) {
+        $customerSelector = if ($CustomerName -and $CustomerTenantId) { "$CustomerName / $CustomerTenantId" } elseif ($CustomerName) { $CustomerName } else { $CustomerTenantId }
+        throw "Customer '$customerSelector' was not found in configuration."
+    }
+
+    if ($customer) {
+        $script:ActiveCustomer = $customer
+        if (-not [string]::IsNullOrWhiteSpace($customer.name) -and [string]::IsNullOrWhiteSpace($CustomerName)) {
+            $script:CustomerName = $customer.name
+        }
+        if (-not [string]::IsNullOrWhiteSpace($customer.tenantId) -and [string]::IsNullOrWhiteSpace($CustomerTenantId)) {
+            $script:CustomerTenantId = $customer.tenantId
+        }
+
+        if (-not $PSBoundParameters.ContainsKey('AuthenticationTier') -and -not [string]::IsNullOrWhiteSpace($customer.authenticationTier)) {
+            $script:AuthenticationTier = $customer.authenticationTier
+        }
+    }
+
+    $resolvedClientId = if (-not [string]::IsNullOrWhiteSpace($AppClientId)) {
+        $AppClientId
+    } elseif ($config -and $config.app -and $config.app.clientId) {
+        "$($config.app.clientId)"
+    } else {
+        $LegacyAppID
+    }
+
+    $resolvedTenantId = if (-not [string]::IsNullOrWhiteSpace($CustomerTenantId)) {
+        $CustomerTenantId
+    } elseif ($config -and $config.app -and $config.app.defaultTenantId) {
+        "$($config.app.defaultTenantId)"
+    } else {
+        $LegacyTenantID
+    }
+
+    $resolvedSecret = if (-not [string]::IsNullOrWhiteSpace($AppSecret)) {
+        $AppSecret
+    } elseif ($config -and $config.app -and $config.app.defaultSecret) {
+        "$($config.app.defaultSecret)"
+    } else {
+        $LegacySecret
+    }
+
+    $resolvedThumbprint = if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        $CertificateThumbprint
+    } elseif ($config -and $config.app -and $config.app.defaultCertificateThumbprint) {
+        "$($config.app.defaultCertificateThumbprint)"
+    } else {
+        $LegacyDefaultCertificateThumbprint
+    }
+
+    $script:ConnectionSettings = [PSCustomObject]@{
+        AppClientId                  = $resolvedClientId
+        TenantId                     = $resolvedTenantId
+        AppSecret                    = $resolvedSecret
+        DefaultCertificateThumbprint = $resolvedThumbprint
+    }
+
+    if ($script:ActiveCustomer -and $script:ActiveCustomer.allowAuthMethodsRead -eq $false -and $AuthenticationTier -ne 'Tier1') {
+        throw "Customer '$($script:ActiveCustomer.name)' does not allow authentication method collection. Use Tier1 for this tenant."
+    }
+
+    if ($script:ActiveCustomer -and $script:ActiveCustomer.allowedModes) {
+        $allowedModes = @($script:ActiveCustomer.allowedModes | ForEach-Object { "$_".ToLower() })
+        $requestedModes = @()
+        if ($DeviceId) { $requestedModes += 'device' }
+        if ($UserPrincipalName) { $requestedModes += 'identity' }
+        if ($DeviceId -and $UserPrincipalName) { $requestedModes += 'both' }
+
+        foreach ($mode in $requestedModes | Select-Object -Unique) {
+            if ($allowedModes -notcontains $mode) {
+                throw "Customer '$($script:ActiveCustomer.name)' does not allow execution mode '$mode'."
+            }
+        }
+    }
+}
+
+function Initialize-RunOutputDirectory {
+    $runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $script:CurrentRunLabel = $runStamp
+
+    $baseRoot = if (-not [string]::IsNullOrWhiteSpace($ReportRootPath)) {
+        $ReportRootPath
+    } elseif ($script:Config -and $script:Config.app -and $script:Config.app.reportRootPath) {
+        "$($script:Config.app.reportRootPath)"
+    } else {
+        'Reports'
+    }
+
+    if (-not [System.IO.Path]::IsPathRooted($baseRoot)) {
+        $baseRoot = Join-Path -Path (Get-Location) -ChildPath $baseRoot
+    }
+
+    $customerFolder = if ($script:ActiveCustomer -and $script:ActiveCustomer.reportSubdirectory) {
+        Get-SafePathSegment -Value "$($script:ActiveCustomer.reportSubdirectory)"
+    } elseif (-not [string]::IsNullOrWhiteSpace($CustomerName)) {
+        Get-SafePathSegment -Value $CustomerName
+    } elseif (-not [string]::IsNullOrWhiteSpace($CustomerTenantId)) {
+        Get-SafePathSegment -Value $CustomerTenantId
+    } else {
+        'default'
+    }
+
+    $outputDir = Join-Path -Path (Join-Path -Path $baseRoot -ChildPath $customerFolder) -ChildPath $runStamp
+    if (-not (Test-Path -Path $outputDir)) {
+        New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
+    }
+
+    $script:RunOutputDir = $outputDir
+    Write-Host "Run output directory: $outputDir" -ForegroundColor Cyan
+}
+
+function Write-ExecutionContextSummary {
+    Write-Host "Execution context summary:" -ForegroundColor Cyan
+    if (-not [string]::IsNullOrWhiteSpace($CustomerName)) {
+        Write-Host "  Customer name: $CustomerName" -ForegroundColor DarkCyan
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CustomerTenantId)) {
+        Write-Host "  Target tenant: $CustomerTenantId" -ForegroundColor DarkCyan
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:ConnectionSettings.AppClientId) -and $AuthenticationMethod -ne 'User') {
+        Write-Host "  App client ID: $($script:ConnectionSettings.AppClientId)" -ForegroundColor DarkCyan
+    }
+    Write-Host "  Authentication method: $AuthenticationMethod" -ForegroundColor DarkCyan
+    Write-Host "  Requested tier: $AuthenticationTier" -ForegroundColor DarkCyan
+}
 
 function Check-InstalledGraphModules {
     $moduleName = 'Microsoft.Graph.Security'
@@ -222,21 +488,42 @@ function Test-AuthMethodsScopeEnabled {
 }
 
 function Connect-GraphAPI-ServicePrincipalSecret {
-    Write-Host "Connecting to Microsoft Graph API with AppId $AppID..." -ForegroundColor Cyan
+    if ([string]::IsNullOrWhiteSpace($script:ConnectionSettings.AppClientId) -or $script:ConnectionSettings.AppClientId -like "<*>") {
+        throw "Service principal secret authentication requires a valid AppClientId."
+    }
+    if ([string]::IsNullOrWhiteSpace($script:ConnectionSettings.TenantId) -or $script:ConnectionSettings.TenantId -like "<*>") {
+        throw "Service principal secret authentication requires a target CustomerTenantId."
+    }
+    if ([string]::IsNullOrWhiteSpace($script:ConnectionSettings.AppSecret) -or $script:ConnectionSettings.AppSecret -like "<*>") {
+        throw "Service principal secret authentication requires an AppSecret."
+    }
+
+    $secureClientSecret = ConvertTo-SecureString -String $script:ConnectionSettings.AppSecret -AsPlainText -Force
+    $clientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $script:ConnectionSettings.AppClientId, $secureClientSecret
+
+    Write-Host "Connecting to Microsoft Graph API with AppId $($script:ConnectionSettings.AppClientId)..." -ForegroundColor Cyan
     $requiredPermissions = Get-EffectiveTierScopes -TierConfig $script:SelectedAuthTierConfig
     if ($requiredPermissions.Count -gt 0) {
         Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
         Write-Host "Required permissions: $($requiredPermissions -join ', ')" -ForegroundColor DarkCyan
     }
-    Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $ClientSecretCredential -NoWelcome
+    Write-Host "Target tenant: $($script:ConnectionSettings.TenantId)" -ForegroundColor DarkCyan
+    Connect-MgGraph -TenantId $script:ConnectionSettings.TenantId -ClientSecretCredential $clientSecretCredential -NoWelcome
 }
 
 function Connect-GraphAPI-ServicePrincipalCertificate {
-    $EffectiveThumbprint = if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) { $DefaultCertificateThumbprint } else { $CertificateThumbprint }
+    if ([string]::IsNullOrWhiteSpace($script:ConnectionSettings.AppClientId) -or $script:ConnectionSettings.AppClientId -like "<*>") {
+        throw "Service principal certificate authentication requires a valid AppClientId."
+    }
+    if ([string]::IsNullOrWhiteSpace($script:ConnectionSettings.TenantId) -or $script:ConnectionSettings.TenantId -like "<*>") {
+        throw "Service principal certificate authentication requires a target CustomerTenantId."
+    }
+
+    $EffectiveThumbprint = $script:ConnectionSettings.DefaultCertificateThumbprint
 
     if ([string]::IsNullOrWhiteSpace($EffectiveThumbprint) -or $EffectiveThumbprint -like "<*>") {
         Write-Host "Certificate authentication selected, but no valid thumbprint is configured." -ForegroundColor Red
-        Write-Host "Set -CertificateThumbprint or update the placeholder value in the script." -ForegroundColor Yellow
+        Write-Host "Set -CertificateThumbprint or configure a default certificate thumbprint in the configuration file." -ForegroundColor Yellow
         return
     }
 
@@ -250,13 +537,14 @@ function Connect-GraphAPI-ServicePrincipalCertificate {
         return
     }
 
-    Write-Host "Connecting to Microsoft Graph API with AppId $AppID using certificate thumbprint $EffectiveThumbprint..." -ForegroundColor Cyan
+    Write-Host "Connecting to Microsoft Graph API with AppId $($script:ConnectionSettings.AppClientId) using certificate thumbprint $EffectiveThumbprint..." -ForegroundColor Cyan
     $requiredPermissions = Get-EffectiveTierScopes -TierConfig $script:SelectedAuthTierConfig
     if ($requiredPermissions.Count -gt 0) {
         Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
         Write-Host "Required permissions: $($requiredPermissions -join ', ')" -ForegroundColor DarkCyan
     }
-    Connect-MgGraph -ClientId $AppID -TenantId $TenantID -CertificateThumbprint $EffectiveThumbprint -NoWelcome
+    Write-Host "Target tenant: $($script:ConnectionSettings.TenantId)" -ForegroundColor DarkCyan
+    Connect-MgGraph -ClientId $script:ConnectionSettings.AppClientId -TenantId $script:ConnectionSettings.TenantId -CertificateThumbprint $EffectiveThumbprint -NoWelcome
 }
 
 function Connect-GraphAPI-User {
@@ -269,7 +557,12 @@ function Connect-GraphAPI-User {
     Write-Host "Selected authentication tier: $($script:SelectedAuthTierConfig.Name)" -ForegroundColor Cyan
     Write-Host "Required permissions: $($scopes -join ', ')" -ForegroundColor DarkCyan
 
-    Connect-MgGraph -Scopes $scopes -NoWelcome
+    if (-not [string]::IsNullOrWhiteSpace($CustomerTenantId)) {
+        Write-Host "Target tenant: $CustomerTenantId" -ForegroundColor DarkCyan
+        Connect-MgGraph -TenantId $CustomerTenantId -Scopes $scopes -NoWelcome
+    } else {
+        Connect-MgGraph -Scopes $scopes -NoWelcome
+    }
 }
 
 function Connect-GraphAPI {
@@ -422,7 +715,8 @@ function RunKQLQuery {
     }
     if ($ExportResults -And $table.count -ne 0){
         $ExportName = $FileName + ".csv"
-        $table | Export-CSV .\$ExportName -NoTypeInformation
+        $ExportPath = Join-Path -Path $script:RunOutputDir -ChildPath $ExportName
+        $table | Export-CSV $ExportPath -NoTypeInformation
     }
 
     $sampleRows = @()
@@ -1460,7 +1754,7 @@ $footerHtml
 </html>
 "@
 
-    $outputDir = Join-Path -Path (Get-Location) -ChildPath 'Reports'
+    $outputDir = $script:RunOutputDir
 
     if (-not (Test-Path -Path $outputDir)) {
         New-Item -Path $outputDir -ItemType Directory | Out-Null
@@ -1488,7 +1782,7 @@ function GenerateMainReportPage {
     $logoBase64 = Get-LogoBase64
     $logoImgHtml = if ($logoBase64) { "<img class='header-logo' src='data:image/png;base64,$logoBase64' alt='KustoHawk' />" } else { "" }
 
-    $outputDir = Join-Path -Path (Get-Location) -ChildPath 'Reports'
+    $outputDir = $script:RunOutputDir
     if (-not (Test-Path -Path $outputDir)) {
         New-Item -Path $outputDir -ItemType Directory | Out-Null
     }
@@ -2147,6 +2441,16 @@ if (-not $DeviceId -And -not $UserPrincipalName) {
 if ($VerboseOutput) {
     Write-Host "[*] Verbose mode enabled." -ForegroundColor Cyan
 }
+
+try {
+    Initialize-ExecutionContext
+} catch {
+    Write-Host "Failed to initialize execution context: $_" -ForegroundColor Red
+    exit 1
+}
+
+Initialize-RunOutputDirectory
+Write-ExecutionContextSummary
 
 $deviceQueryResults = $null
 $identityQueryResults = $null
