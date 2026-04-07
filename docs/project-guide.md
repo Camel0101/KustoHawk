@@ -60,7 +60,7 @@ Ce dossier contient le contenu métier principal consommé par le script :
 Ce dossier contient des helpers de maintenance :
 
 - [CleanForCommit.ps1](/home/hugo/codex-gpt/KustoHawk/Scripts/CleanForCommit.ps1) : nettoyage avant commit
-- [UIQueryToJSONFormat.ps1](/home/hugo/codex-gpt/KustoHawk/Scripts/UIQueryToJSONFormat.ps1) : aide pour transformer une requête KQL en chaîne JSON utilisable par le projet
+- [UIQueryToJSONFormat.ps1](/home/hugo/codex-gpt/KustoHawk/Scripts/UIQueryToJSONFormat.ps1) : workflow officiel pour transformer une requête KQL testée dans Advanced Hunting en bloc JSON compatible KustoHawk
 
 #### `Images/`
 
@@ -594,25 +594,14 @@ Cela évite d'avoir des requêtes figées ou difficiles à réutiliser.
 
 ### Convertir une requête KQL au bon format
 
-Le projet attend une requête stockée sur une seule ligne JSON. Deux options :
+Le projet attend une requête stockée sur une seule ligne JSON. Le workflow recommandé consiste à sauvegarder la KQL dans un fichier texte puis à utiliser [UIQueryToJSONFormat.ps1](/home/hugo/codex-gpt/KustoHawk/Scripts/UIQueryToJSONFormat.ps1), qui :
 
-- utiliser [UIQueryToJSONFormat.ps1](/home/hugo/codex-gpt/KustoHawk/Scripts/UIQueryToJSONFormat.ps1)
-- reprendre l'exemple déjà documenté dans le `README`
+- choisit le bon fichier cible selon `Device` ou `Identity`
+- injecte les placeholders du projet
+- produit la requête oneliner
+- retourne un bloc JSON prêt à coller
 
-Exemple de transformation :
-
-```powershell
-$Query = "let Upn = '{UserPrincipalName}';
-let TimeFrame = {TimeFrame};
-AADUserRiskEvents
-| where TimeGenerated > ago(TimeFrame)
-| where UserPrincipalName =~ Upn
-| summarize arg_max(TimeGenerated, *) by UserPrincipalName
-| project TimeGenerated, UserPrincipalName, RiskState, RiskLevel, RiskDetail, RiskEventType"
-
-$Output = $Query -replace '\r','\r' -replace '\n','\n'
-Write-Output $Output
-```
+La procédure détaillée est documentée dans [query-authoring.md](/home/hugo/codex-gpt/KustoHawk/docs/query-authoring.md).
 
 ### Checklist de contribution
 

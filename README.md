@@ -109,6 +109,8 @@ Missing tables do not break KustoHawk, but fewer detections are returned.
 ## Contribute
 Contributions are highly appriciated! You can contribute by adding new queries to the JSON files in the [Resources](./Resources/) folder. Create a pull request for the new queries.
 
+The recommended workflow for preparing a new query is documented in [docs/query-authoring.md](./docs/query-authoring.md) and uses [Scripts/UIQueryToJSONFormat.ps1](./Scripts/UIQueryToJSONFormat.ps1).
+
 The JSON has three required fields:
 - "Name": Name of the query.
 - "Query": The query to execute. The PowerShell script replaces the variables *{DeviceId}*, *{TimeFrame}* and *{UserPrincipalName}* in the KQL to the input values of the script.
@@ -123,21 +125,19 @@ The JSON has three required fields:
 }
 ```
 
-**Translate KQL query to single line string**
+**Prepare a new KQL query for KustoHawk**
 
-The query field in the json should be a single line string, the PowerShell script below can be used to translate the query to the right format.
+Save the tested KQL query into a text file and use the project helper:
 
 ```PowerShell
-$Query = "let Upn = '{UserPrincipalName}';
-let TimeFrame = {TimeFrame};
-AADUserRiskEvents
-| where TimeGenerated > ago(TimeFrame)
-| where UserPrincipalName =~ Upn
-| summarize arg_max(TimeGenerated, *) by UserPrincipalName
-| project TimeGenerated, UserPrincipalName, RiskState, RiskLevel, RiskDetail, RiskEventType"
-$Output = $Query -replace '\r','\r' -replace '\n','\n'
-Write-Output $Output
+.\Scripts\UIQueryToJSONFormat.ps1 `
+  -QueryPath .\my-query.txt `
+  -QueryType Identity `
+  -Name "User risk events" `
+  -Source "https://github.com/Bert-JanP/Hunting-Queries-Detection-Rules/blob/main/Azure%20Active%20Directory/PotentialAiTMPhishing.md"
 ```
+
+This returns the target file, the normalized query, the one-liner version, and a ready-to-paste JSON block.
 
 # Credits
 he queries of the authors below are used in KustoHawk.
